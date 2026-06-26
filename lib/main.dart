@@ -1,4 +1,6 @@
+// ignore_for_file: avoid_print
 import 'package:flutter/material.dart';
+import 'package:matrix/matrix.dart' as matrix;
 
 void main() {
   runApp(const MatrixMessengerApp());
@@ -14,16 +16,13 @@ class MatrixMessengerApp extends StatelessWidget {
       title: 'Matrix Messenger',
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: const Color(0xFF121212),
-        colorScheme: const ColorScheme.dark(
-          primary: Colors.greenAccent, // Основной неоново-зеленый акцент
-        ),
+        colorScheme: const ColorScheme.dark(primary: Colors.greenAccent),
       ),
       home: const LoginScreen(),
     );
   }
 }
 
-// Изменился тип виджета: теперь он поддерживает состояние (Stateful)
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -32,29 +31,79 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  // Контроллеры — это программные "щупальца", считывающие текст из полей
   final TextEditingController _homeserverController = TextEditingController(
     text: 'https://matrix.org',
   );
   final TextEditingController _usernameController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
 
+  bool _isLoading = false;
+
   @override
   void dispose() {
-    // Очищаем память контроллеров при закрытии экрана
     _homeserverController.dispose();
     _usernameController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
 
-  void _login() {
-    // Функция запускается по клику на кнопку. Пока что выводим данные в консоль VS Code
-    print('=== ПОПЫТКА АВТОРИЗАЦИИ MATRIX ===');
-    print('Сервер: ${_homeserverController.text}');
-    print('Логин: ${_usernameController.text}');
-    print('Пароль: ${_passwordController.text}');
-    print('==================================');
+  Future<void> _login() async {
+    if (_usernameController.text.isEmpty || _passwordController.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('⚠️ Введите логин и пароль')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+    });
+
+    try {
+      // НАША ДОБЫЧА ИЗ РАЗВЕДКИ: Передаем клиенту родной MatrixSdkDatabase!
+      final client = matrix.Client(
+        'MatrixMessenger',
+        database: await matrix.MatrixSdkDatabase.init('MatrixMessenger'),
+      );
+
+      final homeserverUri = Uri.parse(_homeserverController.text.trim());
+      await client.checkHomeserver(homeserverUri);
+
+      await client.login(
+        matrix.LoginType.mLoginPassword,
+        password: _passwordController.text,
+        identifier: matrix.AuthenticationUserIdentifier(
+          user: _usernameController.text.trim(),
+        ),
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            backgroundColor: Colors.green,
+            content: Text('✅ ДОСТУП РАЗРЕШЕН! Успешный вход в Matrix.'),
+          ),
+        );
+      }
+    } catch (e) {
+      print('Ошибка авторизации Matrix: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            backgroundColor: Colors.redAccent,
+            content: Text(
+              '❌ ОТКАЗАНО В ДОСТУПЕ: Неверный пароль или пользователь не найден.',
+            ),
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
   }
 
   @override
@@ -72,9 +121,7 @@ class _LoginScreenState extends State<LoginScreen> {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24.0),
           child: ConstrainedBox(
-            constraints: const BoxConstraints(
-              maxWidth: 400,
-            ), // Ограничение ширины для аккуратного вида на ПК
+            constraints: const BoxConstraints(maxWidth: 400),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -83,6 +130,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 32),
                 TextField(
                   controller: _homeserverController,
+                  enabled: !_isLoading,
                   decoration: const InputDecoration(
                     labelText: 'Домашний сервер Matrix',
                     border: OutlineInputBorder(),
@@ -92,8 +140,9 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 16),
                 TextField(
                   controller: _usernameController,
+                  enabled: !_isLoading,
                   decoration: const InputDecoration(
-                    labelText: 'Имя пользователя (напр. @neo:matrix.org)',
+                    labelText: 'Имя пользователя',
                     border: OutlineInputBorder(),
                     prefixIcon: Icon(Icons.person),
                   ),
@@ -101,7 +150,8 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 16),
                 TextField(
                   controller: _passwordController,
-                  obscureText: true, // Скрывает вводимый пароль звездочками
+                  enabled: !_isLoading,
+                  obscureText: true,
                   decoration: const InputDecoration(
                     labelText: 'Пароль',
                     border: OutlineInputBorder(),
@@ -110,7 +160,7 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
                 const SizedBox(height: 32),
                 ElevatedButton(
-                  onPressed: _login,
+                  onPressed: _isLoading ? null : _login,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: Colors.greenAccent,
                     foregroundColor: Colors.black,
@@ -121,7 +171,16 @@ class _LoginScreenState extends State<LoginScreen> {
                       letterSpacing: 1.5,
                     ),
                   ),
-                  child: const Text('ПОДКЛЮЧИТЬСЯ'),
+                  child: _isLoading
+                      ? const SizedBox(
+                          height: 20,
+                          width: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.black,
+                          ),
+                        )
+                      : const Text('ПОДКЛЮЧИТЬСЯ'),
                 ),
               ],
             ),
