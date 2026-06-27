@@ -1,7 +1,7 @@
 // ignore_for_file: avoid_print
 import 'package:flutter/material.dart';
 import '../services/matrix_service.dart';
-import 'room_list_screen.dart';
+import 'workspace_screen.dart'; // Подключили Командный Центр!
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -28,9 +28,8 @@ class _LoginScreenState extends State<LoginScreen> {
   void _openSecureTerminal() {
     Navigator.of(context).pushReplacement(
       PageRouteBuilder(
-        // Заменили все "__" на человеческие названия параметров:
         pageBuilder: (context, animation, secondaryAnimation) =>
-            RoomListScreen(matrixService: _matrixService),
+            WorkspaceScreen(matrixService: _matrixService),
         transitionsBuilder: (context, animation, secondaryAnimation, child) =>
             FadeTransition(opacity: animation, child: child),
         transitionDuration: const Duration(milliseconds: 400),
@@ -41,7 +40,7 @@ class _LoginScreenState extends State<LoginScreen> {
   Future<void> _checkAutoLogin() async {
     bool isLoggedIn = await _matrixService.tryRestoreSession();
     if (isLoggedIn && mounted) {
-      print("⚡ Авто-вход выполнен. Открываем каналы...");
+      print("⚡ Авто-вход выполнен. Разворачиваем Командный Центр...");
       _openSecureTerminal();
     }
   }
