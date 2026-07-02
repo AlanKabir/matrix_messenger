@@ -1,7 +1,9 @@
 // ignore_for_file: avoid_print
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart' as matrix;
 import '../services/matrix_service.dart';
+import 'login_screen.dart';
 
 class WorkspaceScreen extends StatefulWidget {
   final MatrixService matrixService;
@@ -22,13 +24,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _client = widget.matrixService.client!;
   }
 
+  Future<void> _logout() async {
+    await _client.logout();
+    if (mounted) {
+      Navigator.of(context).pushReplacement(
+        PageRouteBuilder(
+          pageBuilder: (context, animation, secondaryAnimation) =>
+              const LoginScreen(),
+          transitionsBuilder: (context, animation, secondaryAnimation, child) =>
+              FadeTransition(opacity: animation, child: child),
+          transitionDuration: const Duration(milliseconds: 300),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       body: Row(
         children: [
-          // ================= ЛЕВАЯ ПАНЕЛЬ =================
           Container(
             width: 340,
             decoration: const BoxDecoration(
@@ -45,8 +61,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               ],
             ),
           ),
-
-          // ================= ПРАВАЯ ПАНЕЛЬ =================
           Expanded(
             child: _selectedRoom == null
                 ? _buildEmptyPlaceholder()
@@ -65,29 +79,48 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          const Text(
-            'MATRIX // КОМАНДНЫЙ ЦЕНТР',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 13,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 2,
+          const Expanded(
+            child: Text(
+              'ABYROY // CHAT',
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 2,
+              ),
             ),
           ),
-          Container(
-            width: 8,
-            height: 8,
-            decoration: const BoxDecoration(
-              color: Color(0xFF00E676),
-              shape: BoxShape.circle,
-              boxShadow: [
-                BoxShadow(
+          const SizedBox(width: 8),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: const BoxDecoration(
                   color: Color(0xFF00E676),
-                  blurRadius: 6,
-                  spreadRadius: 1,
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: Color(0xFF00E676),
+                      blurRadius: 6,
+                      spreadRadius: 1,
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(
+                  Icons.logout,
+                  color: Color(0xFF7A7A7A),
+                  size: 18,
+                ),
+                tooltip: 'Выйти из аккаунта',
+                onPressed: _logout,
+              ),
+            ],
           ),
         ],
       ),
@@ -100,7 +133,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       child: TextField(
         style: const TextStyle(color: Colors.white, fontSize: 13),
         decoration: InputDecoration(
-          hintText: 'Поиск по шифрованным каналам...',
+          hintText: 'Поиск по каналам...',
           hintStyle: const TextStyle(color: Color(0xFF666666)),
           prefixIcon: const Icon(
             Icons.search,
@@ -153,79 +186,83 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 ? lastMsg
                 : 'Нет сообщений';
 
-            return Container(
-              margin: const EdgeInsets.symmetric(vertical: 2),
-              decoration: BoxDecoration(
+            // ИСПРАВЛЕНО: Container+decoration заменён на Material,
+            // чтобы ink-эффекты ListTile (подсветка при наведении/тапе)
+            // отображались поверх фонового цвета корректно
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Material(
                 color: isSelected
                     ? const Color(0xFF1E2E25)
                     : Colors.transparent,
                 borderRadius: BorderRadius.circular(10),
-              ),
-              child: ListTile(
-                contentPadding: const EdgeInsets.symmetric(
-                  vertical: 4,
-                  horizontal: 8,
-                ),
-                leading: CircleAvatar(
-                  radius: 22,
-                  backgroundColor: isSelected
-                      ? const Color(0xFF00E676)
-                      : const Color(0xFF222222),
-                  child: Text(
-                    firstLetter,
-                    style: TextStyle(
-                      color: isSelected
-                          ? Colors.black
-                          : const Color(0xFF00E676),
-                      fontWeight: FontWeight.bold,
-                      fontSize: 16,
+                clipBehavior: Clip.antiAlias,
+                child: ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    vertical: 4,
+                    horizontal: 8,
+                  ),
+                  leading: CircleAvatar(
+                    radius: 22,
+                    backgroundColor: isSelected
+                        ? const Color(0xFF00E676)
+                        : const Color(0xFF222222),
+                    child: Text(
+                      firstLetter,
+                      style: TextStyle(
+                        color: isSelected
+                            ? Colors.black
+                            : const Color(0xFF00E676),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
                     ),
                   ),
-                ),
-                title: Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14,
-                  ),
-                ),
-                subtitle: Padding(
-                  padding: const EdgeInsets.only(top: 4.0),
-                  child: Text(
-                    subtitle,
+                  title: Text(
+                    title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
-                      color: Color(0xFF8A8A8A),
-                      fontSize: 12,
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
                     ),
                   ),
-                ),
-                trailing: unread > 0
-                    ? Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: const BoxDecoration(
-                          color: Color(0xFF00E676),
-                          shape: BoxShape.circle,
-                        ),
-                        child: Text(
-                          unread.toString(),
-                          style: const TextStyle(
-                            color: Colors.black,
-                            fontSize: 10,
-                            fontWeight: FontWeight.bold,
+                  subtitle: Padding(
+                    padding: const EdgeInsets.only(top: 4.0),
+                    child: Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF8A8A8A),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+                  trailing: unread > 0
+                      ? Container(
+                          padding: const EdgeInsets.all(6),
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF00E676),
+                            shape: BoxShape.circle,
                           ),
-                        ),
-                      )
-                    : null,
-                onTap: () {
-                  setState(() {
-                    _selectedRoom = room;
-                  });
-                },
+                          child: Text(
+                            unread.toString(),
+                            style: const TextStyle(
+                              color: Colors.black,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        )
+                      : null,
+                  onTap: () {
+                    setState(() {
+                      _selectedRoom = room;
+                    });
+                  },
+                ),
               ),
             );
           },
@@ -253,7 +290,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             ),
             SizedBox(height: 6),
             Text(
-              'Выберите защищенный канал слева для дешифровки',
+              'Выберите канал слева для начала работы',
               style: TextStyle(color: Color(0xFF333333), fontSize: 13),
             ),
           ],
@@ -263,12 +300,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 }
 
-// =====================================================================
-// ================= ВНУТРЕННИЙ МОДУЛЬ ПРАВОГО ЭКРАНА ==================
-// =====================================================================
-
 class ChatPanel extends StatefulWidget {
   final matrix.Room room;
+
   const ChatPanel({super.key, required this.room});
 
   @override
@@ -309,10 +343,7 @@ class _ChatPanelState extends State<ChatPanel> {
 
   void _sendMessage() {
     final text = _messageController.text.trim();
-    if (text.isEmpty) {
-      // <-- ИСПРАВЛЕНО №1: заперто в скобки
-      return;
-    }
+    if (text.isEmpty) return;
     widget.room.sendTextEvent(text);
     _messageController.clear();
   }
@@ -368,7 +399,7 @@ class _ChatPanelState extends State<ChatPanel> {
                 if (!snapshot.hasData || snapshot.hasError) {
                   return const Center(
                     child: Text(
-                      'Ошибка дешифровки стека',
+                      'Ошибка загрузки сообщений',
                       style: TextStyle(color: Colors.redAccent),
                     ),
                   );
@@ -390,15 +421,27 @@ class _ChatPanelState extends State<ChatPanel> {
                   itemCount: events.length,
                   itemBuilder: (context, index) {
                     final event = events[index];
+
+                    // Отсекаем только технические системные события входа/выхода
                     if (event.relationshipEventId != null ||
-                        event.type != 'm.room.message') {
-                      // <-- ИСПРАВЛЕНО №2: заперто в скобки
+                        (event.type != 'm.room.message' &&
+                            event.type != 'm.room.encrypted')) {
                       return const SizedBox.shrink();
                     }
 
                     final isOwn = event.senderId == widget.room.client.userID;
+
+                    // ЧИСТАЯ ЛОГИКА: Выводим текст сообщения, если он доступен.
+                    String bodyText = event.body;
+
+                    // Если сообщение зашифровано, но внутри пусто — значит, ключ еще не прилетел
+                    if (event.type == 'm.room.encrypted' &&
+                        (bodyText.isEmpty || bodyText.contains('Unknown'))) {
+                      bodyText = "⏳ Идет запрос ключей шифрования...";
+                    }
+
                     return _buildBubble(
-                      event.body,
+                      bodyText,
                       event.senderId,
                       isOwn,
                       event.originServerTs,
@@ -486,23 +529,33 @@ class _ChatPanelState extends State<ChatPanel> {
       child: Row(
         children: [
           Expanded(
-            child: TextField(
-              controller: _messageController,
-              style: const TextStyle(color: Colors.white, fontSize: 14),
-              minLines: 1,
-              maxLines: 5,
-              decoration: InputDecoration(
-                hintText: 'Написать в защищенный чат...',
-                hintStyle: const TextStyle(color: Color(0xFF555555)),
-                filled: true,
-                fillColor: const Color(0xFF0D0D0D),
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 18,
-                  vertical: 14,
-                ),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
-                  borderSide: BorderSide.none,
+            child: CallbackShortcuts(
+              bindings: {
+                const SingleActivator(LogicalKeyboardKey.enter): _sendMessage,
+              },
+              child: TextField(
+                controller: _messageController,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+                minLines: 1,
+                maxLines: 5,
+                textInputAction: TextInputAction.newline,
+                decoration: InputDecoration(
+                  hintText:
+                      'Написать сообщение (Enter - отправить, Shift+Enter - перенос)...',
+                  hintStyle: const TextStyle(
+                    color: Color(0xFF555555),
+                    fontSize: 12,
+                  ),
+                  filled: true,
+                  fillColor: const Color(0xFF0D0D0D),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 18,
+                    vertical: 14,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
                 ),
               ),
             ),
