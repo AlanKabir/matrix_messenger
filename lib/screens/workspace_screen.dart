@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart' as matrix;
 import '../services/matrix_service.dart';
 import 'login_screen.dart';
+import 'new_chat_search_sheet.dart';
 
 class WorkspaceScreen extends StatefulWidget {
   final MatrixService matrixService;
@@ -18,10 +19,25 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   late final matrix.Client _client;
   matrix.Room? _selectedRoom;
 
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
   @override
   void initState() {
     super.initState();
     _client = widget.matrixService.client!;
+
+    _searchController.addListener(() {
+      setState(() {
+        _searchQuery = _searchController.text.trim().toLowerCase();
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _logout() async {
@@ -37,6 +53,26 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         ),
       );
     }
+  }
+
+  void _openNewChatSearch(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF161616),
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (context) => NewChatSearchSheet(
+        client: _client,
+        onChatOpened: (room) {
+          Navigator.pop(context);
+          setState(() {
+            _selectedRoom = room;
+          });
+        },
+      ),
+    );
   }
 
   @override
@@ -113,6 +149,15 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               const SizedBox(width: 8),
               IconButton(
                 icon: const Icon(
+                  Icons.person_add_alt,
+                  color: Color(0xFF00E676),
+                  size: 18,
+                ),
+                tooltip: 'Найти человека или группу',
+                onPressed: () => _openNewChatSearch(context),
+              ),
+              IconButton(
+                icon: const Icon(
                   Icons.logout,
                   color: Color(0xFF7A7A7A),
                   size: 18,
@@ -131,6 +176,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return Padding(
       padding: const EdgeInsets.all(16.0),
       child: TextField(
+        controller: _searchController,
         style: const TextStyle(color: Colors.white, fontSize: 13),
         decoration: InputDecoration(
           hintText: 'Поиск по каналам...',
@@ -140,6 +186,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             color: Color(0xFF666666),
             size: 18,
           ),
+          suffixIcon: _searchQuery.isNotEmpty
+              ? IconButton(
+                  icon: const Icon(
+                    Icons.close,
+                    color: Color(0xFF666666),
+                    size: 16,
+                  ),
+                  onPressed: () => _searchController.clear(),
+                )
+              : null,
           filled: true,
           fillColor: const Color(0xFF1F1F1F),
           contentPadding: const EdgeInsets.symmetric(vertical: 0),
@@ -156,13 +212,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return StreamBuilder(
       stream: _client.onSync.stream,
       builder: (context, snapshot) {
-        final rooms = _client.rooms;
+        var rooms = _client.rooms;
+
+        if (_searchQuery.isNotEmpty) {
+          rooms = rooms.where((room) {
+            final title = room.getLocalizedDisplayname().toLowerCase();
+            return title.contains(_searchQuery);
+          }).toList();
+        }
 
         if (rooms.isEmpty) {
-          return const Center(
+          return Center(
             child: Text(
-              'Нет активных каналов',
-              style: TextStyle(color: Color(0xFF666666), fontSize: 13),
+              _searchQuery.isNotEmpty
+                  ? 'Ничего не найдено'
+                  : 'Нет активных каналов',
+              style: const TextStyle(color: Color(0xFF666666), fontSize: 13),
             ),
           );
         }
@@ -186,9 +251,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 ? lastMsg
                 : 'Нет сообщений';
 
-            // ИСПРАВЛЕНО: Container+decoration заменён на Material,
-            // чтобы ink-эффекты ListTile (подсветка при наведении/тапе)
-            // отображались поверх фонового цвета корректно
             return Padding(
               padding: const EdgeInsets.symmetric(vertical: 2),
               child: Material(
@@ -319,6 +381,12 @@ class _ChatPanelState extends State<ChatPanel> {
         if (mounted) setState(() {});
       },
     );
+
+    // Как только загрузили таймлайн — отмечаем чат прочитанным,
+    // чтобы счётчик непрочитанных сообщений сбросился
+    _timelineFuture.then((timeline) {
+      timeline.setReadMarker();
+    });
   }
 
   @override
@@ -422,7 +490,6 @@ class _ChatPanelState extends State<ChatPanel> {
                   itemBuilder: (context, index) {
                     final event = events[index];
 
-                    // Отсекаем только технические системные события входа/выхода
                     if (event.relationshipEventId != null ||
                         (event.type != 'm.room.message' &&
                             event.type != 'm.room.encrypted')) {
@@ -431,10 +498,8 @@ class _ChatPanelState extends State<ChatPanel> {
 
                     final isOwn = event.senderId == widget.room.client.userID;
 
-                    // ЧИСТАЯ ЛОГИКА: Выводим текст сообщения, если он доступен.
                     String bodyText = event.body;
 
-                    // Если сообщение зашифровано, но внутри пусто — значит, ключ еще не прилетел
                     if (event.type == 'm.room.encrypted' &&
                         (bodyText.isEmpty || bodyText.contains('Unknown'))) {
                       bodyText = "⏳ Идет запрос ключей шифрования...";
