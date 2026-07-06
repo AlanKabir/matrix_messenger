@@ -161,7 +161,7 @@ class _LoginScreenState extends State<LoginScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF121212),
       appBar: AppBar(
-        title: const Text('MATRIX // Терминал доступа'),
+        title: const Text('ABYROY // CHAT'),
         backgroundColor: Colors.black,
         centerTitle: true,
       ),
