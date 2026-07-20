@@ -2,13 +2,18 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
+import '../services/matrix_service.dart';
+
 class NewChatSearchSheet extends StatefulWidget {
-  final matrix.Client client;
+  // Раньше сюда передавали голый matrix.Client, и поиск дёргал
+  // client.startDirectChat напрямую — в обход дедупа/автоприёма.
+  // Теперь принимаем MatrixService, чтобы личный чат создавался через него.
+  final MatrixService service;
   final void Function(matrix.Room room) onChatOpened;
 
   const NewChatSearchSheet({
     super.key,
-    required this.client,
+    required this.service,
     required this.onChatOpened,
   });
 
@@ -28,6 +33,9 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
 
   List<matrix.Profile> _userResults = [];
   List<matrix.PublishedRoomsChunk> _roomResults = [];
+
+  // Короткий доступ к клиенту для поиска.
+  matrix.Client get _client => widget.service.client!;
 
   @override
   void dispose() {
@@ -60,59 +68,66 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
 
     try {
       if (_tab == _SearchTab.people) {
-        final response = await widget.client.searchUserDirectory(
-          query,
-          limit: 20,
-        );
+        final response = await _client.searchUserDirectory(query, limit: 20);
+        if (!mounted) return;
         setState(() {
           _userResults = response.results;
         });
       } else {
-        final response = await widget.client.queryPublicRooms(
+        final response = await _client.queryPublicRooms(
           filter: matrix.PublicRoomQueryFilter(genericSearchTerm: query),
         );
+        if (!mounted) return;
         setState(() {
           _roomResults = response.chunk;
         });
       }
     } catch (e) {
+      if (!mounted) return;
       setState(() {
         _error = 'Ошибка поиска: $e';
       });
     } finally {
-      setState(() {
-        _isLoading = false;
-      });
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
     }
   }
 
   Future<void> _startDirectChat(String userId) async {
     setState(() => _isLoading = true);
     try {
-      final roomId = await widget.client.startDirectChat(userId);
-      final room = widget.client.getRoomById(roomId);
+      // Через сервис: он переиспользует существующий ЛС и принимает
+      // приглашение, если оно уже висит — дубли больше не плодятся.
+      final room = await widget.service.startDirectChat(userId);
+      if (!mounted) return;
       if (room != null) {
         widget.onChatOpened(room);
+      } else {
+        setState(() => _error = 'Не удалось открыть чат');
       }
     } catch (e) {
-      setState(() => _error = 'Не удалось начать чат: $e');
+      if (mounted) setState(() => _error = 'Не удалось начать чат: $e');
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _joinRoom(String roomId) async {
     setState(() => _isLoading = true);
     try {
-      await widget.client.joinRoom(roomId);
-      final room = widget.client.getRoomById(roomId);
+      await _client.joinRoom(roomId);
+      final room = _client.getRoomById(roomId);
+      if (!mounted) return;
       if (room != null) {
         widget.onChatOpened(room);
       }
     } catch (e) {
-      setState(() => _error = 'Не удалось присоединиться: $e');
+      if (mounted) setState(() => _error = 'Не удалось присоединиться: $e');
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 

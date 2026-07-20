@@ -45,7 +45,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   }
 
   Future<void> _logout() async {
-    await _client.logout();
+    // Через сервис: он гасит подписку на приглашения, потом logout.
+    await widget.matrixService.logout();
     if (mounted) {
       Navigator.of(
         context,
@@ -62,7 +63,9 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => NewChatSearchSheet(
-        client: _client,
+        // Передаём сервис, а не голый client, чтобы личный чат
+        // создавался через дедуп/автоприём.
+        service: widget.matrixService,
         onChatOpened: (room) {
           Navigator.pop(context);
           setState(() => _selectedRoom = room);
@@ -103,6 +106,51 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     if (room != null) {
       // Участников добавляют через поиск сотрудника → room.invite(userId).
       setState(() => _selectedRoom = room);
+    }
+  }
+
+  // «Удалить чат»: локальное скрытие для меня (clearChat). Комнату не покидаю,
+  // историю на сервере не трогаю. У собеседника чат и переписка остаются.
+  // При новом сообщении чат сам вернётся в список — но уже пустым для меня.
+  Future<void> _deleteChat(matrix.Room room) async {
+    final title = room.getLocalizedDisplayname();
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Удалить чат?'),
+        content: Text(
+          'Чат «$title» пропадёт из списка, а переписка скроется у вас. '
+          'У собеседника всё останется. При новом сообщении чат вернётся пустым.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Удалить чат'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await widget.matrixService.clearChat(room.id);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Не удалось удалить чат: $e')));
+      }
+      return;
+    }
+    if (!mounted) return;
+    if (_selectedRoom?.id == room.id) {
+      setState(() => _selectedRoom = null);
+    } else {
+      setState(() {});
     }
   }
 
@@ -222,7 +270,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return StreamBuilder(
       stream: _client.onSync.stream,
       builder: (context, snapshot) {
-        var rooms = _client.rooms;
+        // Показываем только joined-комнаты, которые не «удалены» (скрыты).
+        // Приглашения автоматически принимаются в MatrixService.
+        var rooms = _client.rooms
+            .where((r) => r.membership == matrix.Membership.join)
+            .where((r) => widget.matrixService.isRoomVisible(r))
+            .toList();
         if (_searchQuery.isNotEmpty) {
           rooms = rooms
               .where(
@@ -251,38 +304,47 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             final title = room.getLocalizedDisplayname();
             final lastMsg = room.lastEvent?.body ?? 'Нет сообщений';
 
-            return ListTile(
-              selected: isSelected,
-              selectedTileColor: const Color(0xFFF0F6F4),
-              leading: InitialsAvatar(name: title, group: !room.isDirectChat),
-              title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
-              subtitle: Text(
-                lastMsg,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontSize: 12.5),
-              ),
-              trailing: unread > 0
-                  ? Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 7,
-                        vertical: 2,
-                      ),
-
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF25D366),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        '$unread',
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 11,
+            // Правый клик (десктоп) — удалить чат.
+            return GestureDetector(
+              onSecondaryTap: () => _deleteChat(room),
+              child: ListTile(
+                selected: isSelected,
+                selectedTileColor: const Color(0xFFF0F6F4),
+                leading: InitialsAvatar(name: title, group: !room.isDirectChat),
+                title: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                subtitle: Text(
+                  lastMsg,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12.5),
+                ),
+                trailing: unread > 0
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 7,
+                          vertical: 2,
                         ),
-                      ),
-                    )
-                  : null,
-              onTap: () => setState(() => _selectedRoom = room),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF25D366),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          '$unread',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 11,
+                          ),
+                        ),
+                      )
+                    : null,
+                onTap: () => setState(() => _selectedRoom = room),
+                // Долгое нажатие — удалить чат (для тач/мыши).
+                onLongPress: () => _deleteChat(room),
+              ),
             );
           },
         );

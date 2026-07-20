@@ -156,12 +156,19 @@ class _ChatPanelState extends State<ChatPanel> {
                     ),
                   );
                 }
+                // Если чат был «удалён» — показываем только сообщения ПОЗЖЕ
+                // метки удаления. Старая история скрыта у меня (у собеседника
+                // остаётся), поэтому вернувшийся чат открывается пустым.
+                final clearedTs = widget.service.clearedTsFor(room.id);
                 final events = snapshot.data!.events
                     .where(
                       (e) =>
                           e.relationshipEventId == null &&
                           (e.type == 'm.room.message' ||
-                              e.type == 'm.room.encrypted'),
+                              e.type == 'm.room.encrypted') &&
+                          (clearedTs == null ||
+                              e.originServerTs.millisecondsSinceEpoch >
+                                  clearedTs),
                     )
                     .toList();
                 if (events.isEmpty) {
