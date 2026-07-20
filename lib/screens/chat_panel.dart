@@ -1,11 +1,21 @@
+// screens/chat_panel.dart — окно переписки. Логика Timeline
+// (getTimeline + onUpdate + setReadMarker) сохранена; поверх нее:
+// стиль WhatsApp, галочки, отправка файлов, inline-предпросмотр, пересылка.
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
+import '../services/matrix_service.dart';
+import '../widgets/common.dart';
+import '../widgets/file_preview.dart';
+
 class ChatPanel extends StatefulWidget {
   final matrix.Room room;
+  final MatrixService service;
 
-  const ChatPanel({super.key, required this.room});
+  const ChatPanel({super.key, required this.room, required this.service});
 
   @override
   State<ChatPanel> createState() => _ChatPanelState();
@@ -21,12 +31,9 @@ class _ChatPanelState extends State<ChatPanel> {
         if (mounted) setState(() {});
       },
     );
-
-    // Как только загрузили таймлайн — отмечаем чат прочитанным,
-    // чтобы счётчик непрочитанных сообщений сбросился
-    _timelineFuture.then((timeline) {
-      timeline.setReadMarker();
-    });
+    // Открыли чат → отмечаем прочитанным (read receipt уходит собеседнику,
+    // у него сообщения становятся «2 синие»).
+    _timelineFuture.then((t) => t.setReadMarker());
   }
 
   @override
@@ -38,9 +45,7 @@ class _ChatPanelState extends State<ChatPanel> {
   @override
   void didUpdateWidget(covariant ChatPanel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.room.id != widget.room.id) {
-      _loadTimeline();
-    }
+    if (oldWidget.room.id != widget.room.id) _loadTimeline();
   }
 
   @override
@@ -56,52 +61,91 @@ class _ChatPanelState extends State<ChatPanel> {
     _messageController.clear();
   }
 
+  Future<void> _attachFile() async {
+    final res = await FilePicker.platform.pickFiles(withData: true);
+    final f = res?.files.single;
+    if (f == null || f.bytes == null) return;
+    await widget.room.sendFileEvent(
+      matrix.MatrixFile(bytes: f.bytes!, name: f.name),
+    );
+  }
+
+  Future<void> _forward(matrix.Event event) async {
+    final target = await showForwardPicker(context, widget.room.client);
+    if (target != null) {
+      await widget.service.forwardEvent(event, target);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Переслано в «${target.getLocalizedDisplayname()}»'),
+          ),
+        );
+      }
+    }
+  }
+
+  String _senderName(matrix.Event e) {
+    final user = widget.room.unsafeGetUserFromMemoryOrFallback(e.senderId);
+    return user.calcDisplayname();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final roomTitle = widget.room.getLocalizedDisplayname();
+    final room = widget.room;
+    final title = room.getLocalizedDisplayname();
+    final isGroup = !room.isDirectChat;
 
-    return Scaffold(
-      backgroundColor: const Color(0xFF121212),
-      appBar: AppBar(
-        backgroundColor: const Color(0xFF161616),
-        elevation: 1,
-        automaticallyImplyLeading: false,
-        title: Row(
-          children: [
-            CircleAvatar(
-              radius: 14,
-              backgroundColor: const Color(0xFF0D3823),
-              child: Text(
-                roomTitle.isNotEmpty ? roomTitle[0].toUpperCase() : '?',
-                style: const TextStyle(
-                  color: Color(0xFF00E676),
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
+    return Column(
+      children: [
+        // ------ шапка ------
+        Container(
+          color: const Color(0xFFF0F2F5),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Row(
+            children: [
+              InitialsAvatar(name: title, group: isGroup),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    Text(
+                      isGroup
+                          ? '${room.getParticipants().length} участников'
+                          : room.directChatMatrixID ?? '',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            ),
-            const SizedBox(width: 12),
-            Text(
-              roomTitle,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 15,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1,
-              ),
-            ),
-          ],
+              if (room.encrypted)
+                const Tooltip(
+                  message: 'Сквозное шифрование включено',
+                  child: Icon(Icons.lock, size: 16, color: kAccent),
+                ),
+            ],
+          ),
         ),
-      ),
-      body: Column(
-        children: [
-          Expanded(
+        const Divider(height: 1),
+        // ------ лента ------
+        Expanded(
+          child: Container(
+            color: const Color(0xFFEFEAE2),
             child: FutureBuilder<matrix.Timeline>(
               future: _timelineFuture,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(
-                    child: CircularProgressIndicator(color: Color(0xFF00E676)),
+                    child: CircularProgressIndicator(color: kAccent),
                   );
                 }
                 if (!snapshot.hasData || snapshot.hasError) {
@@ -112,173 +156,227 @@ class _ChatPanelState extends State<ChatPanel> {
                     ),
                   );
                 }
-
-                final events = snapshot.data!.events;
+                final events = snapshot.data!.events
+                    .where(
+                      (e) =>
+                          e.relationshipEventId == null &&
+                          (e.type == 'm.room.message' ||
+                              e.type == 'm.room.encrypted'),
+                    )
+                    .toList();
                 if (events.isEmpty) {
                   return const Center(
                     child: Text(
-                      'Канал пуст. Напишите первое сообщение.',
-                      style: TextStyle(color: Color(0xFF444444)),
+                      'Нет сообщений. Напишите первое.',
+                      style: TextStyle(color: Colors.black38),
                     ),
                   );
                 }
-
                 return ListView.builder(
                   reverse: true,
-                  padding: const EdgeInsets.all(20),
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 12,
+                    horizontal: 40,
+                  ),
                   itemCount: events.length,
                   itemBuilder: (context, index) {
                     final event = events[index];
-
-                    if (event.relationshipEventId != null ||
-                        (event.type != 'm.room.message' &&
-                            event.type != 'm.room.encrypted')) {
-                      return const SizedBox.shrink();
-                    }
-
                     final isOwn = event.senderId == widget.room.client.userID;
-
-                    String bodyText = event.body;
-
-                    if (event.type == 'm.room.encrypted' &&
-                        (bodyText.isEmpty || bodyText.contains('Unknown'))) {
-                      bodyText = "⏳ Идет запрос ключей шифрования...";
-                    }
-
-                    return _buildBubble(
-                      bodyText,
-                      event.senderId,
-                      isOwn,
-                      event.originServerTs,
+                    return _Bubble(
+                      event: event,
+                      room: room,
+                      isOwn: isOwn,
+                      showAuthor: isGroup && !isOwn,
+                      senderName: _senderName(event),
+                      onForward: () => _forward(event),
                     );
                   },
                 );
               },
             ),
           ),
-          _buildInputTerminal(),
-        ],
-      ),
+        ),
+        // ------ композер ------
+        Container(
+          color: const Color(0xFFF0F2F5),
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: [
+              IconButton(
+                tooltip: 'Прикрепить файл',
+                icon: const Icon(Icons.attach_file, color: Color(0xFF54656F)),
+                onPressed: _attachFile,
+              ),
+              Expanded(
+                child: CallbackShortcuts(
+                  bindings: {
+                    const SingleActivator(LogicalKeyboardKey.enter):
+                        _sendMessage,
+                  },
+                  child: TextField(
+                    controller: _messageController,
+                    minLines: 1,
+                    maxLines: 5,
+                    textInputAction: TextInputAction.newline,
+                    decoration: InputDecoration(
+                      hintText:
+                          'Введите сообщение (Enter — отправить, Shift+Enter — перенос)',
+                      filled: true,
+                      fillColor: Colors.white,
+                      isDense: true,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              IconButton.filled(
+                style: IconButton.styleFrom(backgroundColor: kAccent),
+                icon: const Icon(Icons.send, color: Colors.white, size: 18),
+                onPressed: _sendMessage,
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
+}
 
-  Widget _buildBubble(String text, String senderId, bool isOwn, DateTime ts) {
+// -----------------------------------------------------------------------------
+class _Bubble extends StatelessWidget {
+  final matrix.Event event;
+  final matrix.Room room;
+  final bool isOwn;
+  final bool showAuthor;
+  final String senderName;
+  final VoidCallback onForward;
+
+  const _Bubble({
+    required this.event,
+    required this.room,
+    required this.isOwn,
+    required this.showAuthor,
+    required this.senderName,
+    required this.onForward,
+  });
+
+  bool get _isFile =>
+      event.messageType == matrix.MessageTypes.File ||
+      event.messageType == matrix.MessageTypes.Image ||
+      event.messageType == matrix.MessageTypes.Video ||
+      event.messageType == matrix.MessageTypes.Audio;
+
+  @override
+  Widget build(BuildContext context) {
+    final ts = event.originServerTs;
     final timeStr =
-        "${ts.hour.toString().padLeft(2, '0')}:${ts.minute.toString().padLeft(2, '0')}";
+        '${ts.hour.toString().padLeft(2, '0')}:${ts.minute.toString().padLeft(2, '0')}';
+    final fwdFrom = event.content['kz.sgo.forwarded_from'] as String?;
+
+    String bodyText = event.body;
+    final waitingKeys =
+        event.type == 'm.room.encrypted' &&
+        (bodyText.isEmpty || bodyText.contains('Unknown'));
+    if (waitingKeys) bodyText = '⏳ Идет запрос ключей шифрования...';
 
     return Align(
       alignment: isOwn ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        margin: const EdgeInsets.only(bottom: 8),
-        constraints: const BoxConstraints(maxWidth: 480),
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(
-          color: isOwn ? const Color(0xFF0D3823) : const Color(0xFF1E1E1E),
-          border: isOwn
-              ? Border.all(
-                  color: const Color(0xFF00E676).withValues(alpha: 0.4),
-                  width: 1,
-                )
-              : null,
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(14),
-            topRight: const Radius.circular(14),
-            bottomLeft: Radius.circular(isOwn ? 14 : 2),
-            bottomRight: Radius.circular(isOwn ? 2 : 14),
+      child: GestureDetector(
+        onSecondaryTapDown: (d) => _menu(context, d.globalPosition),
+        onLongPress: onForward,
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 520),
+          margin: const EdgeInsets.symmetric(vertical: 3),
+          padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+          decoration: BoxDecoration(
+            color: isOwn ? const Color(0xFFD9FDD3) : Colors.white,
+            borderRadius: BorderRadius.only(
+              topLeft: const Radius.circular(10),
+              topRight: const Radius.circular(10),
+              bottomLeft: Radius.circular(isOwn ? 10 : 2),
+              bottomRight: Radius.circular(isOwn ? 2 : 10),
+            ),
+            boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 1)],
           ),
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            if (!isOwn)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text(
-                  senderId,
-                  style: const TextStyle(
-                    color: Color(0xFF00E676),
-                    fontSize: 11,
-                    fontWeight: FontWeight.bold,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (showAuthor)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 2),
+                  child: Text(
+                    senderName,
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: kAccent,
+                    ),
                   ),
                 ),
+              if (fwdFrom != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.shortcut,
+                        size: 14,
+                        color: Colors.black45,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        'Переслано от $fwdFrom',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontStyle: FontStyle.italic,
+                          color: Colors.black45,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              if (_isFile && !waitingKeys)
+                FileAttachment(event: event)
+              else
+                Text(
+                  bodyText,
+                  style: const TextStyle(fontSize: 14.5, height: 1.3),
+                ),
+              const SizedBox(height: 2),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    timeStr,
+                    style: const TextStyle(fontSize: 11, color: Colors.black45),
+                  ),
+                  if (isOwn) ...[
+                    const SizedBox(width: 4),
+                    StatusTicks(status: ownEventStatus(event, room)),
+                  ],
+                ],
               ),
-            Text(
-              text,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 14,
-                height: 1.3,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Align(
-              alignment: Alignment.bottomRight,
-              child: Text(
-                timeStr,
-                style: const TextStyle(color: Color(0xFF7A7A7A), fontSize: 10),
-              ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
   }
 
-  Widget _buildInputTerminal() {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
-      decoration: const BoxDecoration(
-        color: Color(0xFF161616),
-        border: Border(top: BorderSide(color: Color(0xFF262626), width: 1)),
-      ),
-      child: Row(
-        children: [
-          Expanded(
-            child: CallbackShortcuts(
-              bindings: {
-                const SingleActivator(LogicalKeyboardKey.enter): _sendMessage,
-              },
-              child: TextField(
-                controller: _messageController,
-                style: const TextStyle(color: Colors.white, fontSize: 14),
-                minLines: 1,
-                maxLines: 5,
-                textInputAction: TextInputAction.newline,
-                decoration: InputDecoration(
-                  hintText:
-                      'Написать сообщение (Enter - отправить, Shift+Enter - перенос)...',
-                  hintStyle: const TextStyle(
-                    color: Color(0xFF555555),
-                    fontSize: 12,
-                  ),
-                  filled: true,
-                  fillColor: const Color(0xFF0D0D0D),
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 18,
-                    vertical: 14,
-                  ),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(12),
-                    borderSide: BorderSide.none,
-                  ),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 12),
-          Container(
-            decoration: const BoxDecoration(
-              color: Color(0xFF00E676),
-              borderRadius: BorderRadius.all(Radius.circular(12)),
-            ),
-            child: IconButton(
-              padding: const EdgeInsets.all(12),
-              icon: const Icon(Icons.send, color: Colors.black, size: 20),
-              onPressed: _sendMessage,
-            ),
-          ),
-        ],
-      ),
+  void _menu(BuildContext context, Offset pos) async {
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      items: const [
+        PopupMenuItem(value: 'forward', child: Text('Переслать...')),
+      ],
     );
+    if (action == 'forward') onForward();
   }
 }

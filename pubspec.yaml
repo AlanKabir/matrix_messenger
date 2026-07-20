@@ -31,6 +31,8 @@ dependencies:
   flutter:
     sdk: flutter
 
+  http: ^1.6.0
+
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
@@ -38,6 +40,12 @@ dependencies:
   sqflite_common_ffi: ^2.3.7+1
   path_provider: ^2.1.6
   flutter_vodozemac: ^0.5.0
+  url_launcher: ^6.3.0
+  file_picker: ^8.0.5
+  pdfrx: ^1.0.80
+  excel: ^4.0.3
+  archive: ^3.6.1
+  xml: ^6.5.0
 
 dev_dependencies:
   flutter_test:
@@ -60,6 +68,9 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  assets:
+    - assets/certs/sgo-msg-ca.crt
 
   # To add assets to your application, add an assets section, like this:
   # assets:

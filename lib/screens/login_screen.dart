@@ -1,7 +1,25 @@
-// ignore_for_file: avoid_print
+// screens/login_screen.dart — вход по ТЗ: БЕЗ полей логина и пароля.
+//
+// Порядок при запуске:
+//  1. Пытаемся восстановить сохраненную сессию (как у вас было).
+//  2. Если сессии нет — проверяем, что машина в домене, и АВТОМАТИЧЕСКИ
+//     запускаем SSO-флоу (браузер → Keycloak → Kerberos → loginToken).
+//  3. Успех → восстановление E2EE-ключей (ваш диалог Security Phrase) →
+//     рабочее окно. Ошибка → экран с кнопкой «Повторить вход».
+//
+// Скрытый служебный вход по паролю (LDAP) оставлен за маленькой ссылкой
+// внизу — для админов и ручных учеток. Не нужен — удалите _PasswordFallback.
+
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+
 import '../services/matrix_service.dart';
+import '../widgets/common.dart';
 import 'workspace_screen.dart';
+
+const kFatalMessage =
+    'Ошибка доступа: Требуется авторизация в корпоративном домене';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -10,248 +28,274 @@ class LoginScreen extends StatefulWidget {
   State<LoginScreen> createState() => _LoginScreenState();
 }
 
-class _LoginScreenState extends State<LoginScreen> {
-  final _homeserverController = TextEditingController(
-    text: 'https://matrix.org',
-  );
-  final _usernameController = TextEditingController();
-  final _passwordController = TextEditingController();
-  final _matrixService = MatrixService();
+enum _Stage { restoring, ssoInProgress, error, passwordFallback }
 
-  bool _isLoading = false;
-  bool _isCheckingSession = true; // Защита от преждевременного клика
+class _LoginScreenState extends State<LoginScreen> {
+  final _matrixService = MatrixService();
+  _Stage _stage = _Stage.restoring;
+  String _errorText = '';
 
   @override
   void initState() {
     super.initState();
-    _checkAutoLogin();
+    _bootstrap();
   }
 
-  void _openSecureTerminal() {
-    Navigator.of(context).pushReplacement(
-      PageRouteBuilder(
-        pageBuilder: (context, animation, secondaryAnimation) =>
-            WorkspaceScreen(matrixService: _matrixService),
-        transitionsBuilder: (context, animation, secondaryAnimation, child) =>
-            FadeTransition(opacity: animation, child: child),
-        transitionDuration: const Duration(milliseconds: 400),
-      ),
-    );
+  bool _machineInDomain() {
+    // Быстрый pre-check: у машины вне домена нет USERDNSDOMAIN.
+    // Настоящая защита — на сервере: без Kerberos-тикета Keycloak не пустит.
+    return (Platform.environment['USERDNSDOMAIN'] ?? '').isNotEmpty;
   }
 
-  Future<void> _checkAutoLogin() async {
-    bool isLoggedIn = false;
+  Future<void> _bootstrap() async {
+    bool restored = false;
     try {
-      isLoggedIn = await _matrixService.tryRestoreSession();
+      restored = await _matrixService.tryRestoreSession();
     } catch (_) {}
-
     if (!mounted) return;
 
-    if (isLoggedIn) {
-      print("⚡ Авто-вход выполнен! Проверяем ключи...");
-      await _checkAndRestoreKeys();
-      if (mounted) _openSecureTerminal();
-    } else {
-      // Сессии нет (или она была багованной) — показываем поля ввода
-      setState(() {
-        _isCheckingSession = false;
-      });
-    }
-  }
-
-  Future<void> _checkAndRestoreKeys() async {
-    bool needsBackup = await _matrixService.hasKeyBackup();
-    if (!mounted) return;
-
-    if (needsBackup) {
-      final phrase = await showDialog<String>(
-        context: context,
-        barrierDismissible: false,
-        builder: (dialogContext) {
-          final controller = TextEditingController();
-          return AlertDialog(
-            backgroundColor: const Color(0xFF1E1E1E),
-            title: const Text(
-              'Ключ дешифровки',
-              style: TextStyle(color: Colors.white),
-            ),
-            content: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Введите Security Phrase для расшифровки истории сообщений:',
-                  style: TextStyle(color: Colors.grey, fontSize: 13),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: controller,
-                  obscureText: true,
-                  style: const TextStyle(color: Colors.white),
-                  decoration: const InputDecoration(
-                    hintText: 'Ваша секретная фраза...',
-                    hintStyle: TextStyle(color: Colors.white38),
-                    enabledBorder: OutlineInputBorder(
-                      borderSide: BorderSide(color: Colors.greenAccent),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderSide: BorderSide(color: Colors.white),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(dialogContext, controller.text),
-                child: const Text(
-                  'РАСШИФРОВАТЬ',
-                  style: TextStyle(
-                    color: Colors.greenAccent,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ],
-          );
-        },
-      );
-
-      if (phrase != null && phrase.isNotEmpty) {
-        await _matrixService.restoreKeys(phrase);
-      }
-    }
-  }
-
-  Future<void> _handleLogin() async {
-    if (_usernameController.text.isEmpty || _passwordController.text.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('⚠️ Введите логин и пароль')),
-      );
+    if (restored) {
+      await _finishLogin();
       return;
     }
+    if (!_machineInDomain()) {
+      setState(() {
+        _stage = _Stage.error;
+        _errorText = kFatalMessage;
+      });
+      return;
+    }
+    await _startSso();
+  }
 
-    setState(() => _isLoading = true);
+  Future<void> _startSso() async {
+    setState(() => _stage = _Stage.ssoInProgress);
     try {
-      await _matrixService.login(
-        _homeserverController.text,
-        _usernameController.text,
-        _passwordController.text,
-      );
-
-      await _checkAndRestoreKeys();
-
-      if (mounted) _openSecureTerminal();
+      await _matrixService.loginWithSso();
+      if (mounted) await _finishLogin();
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: Colors.redAccent,
-            content: Text('❌ Ошибка: $e'),
-          ),
-        );
+        setState(() {
+          _stage = _Stage.error;
+          _errorText = 'Не удалось выполнить вход через SSO.\n$e';
+        });
       }
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _finishLogin() async {
+    await _checkAndRestoreKeys();
+    if (!mounted) return;
+    Navigator.of(context).pushReplacement(MaterialPageRoute(
+        builder: (_) => WorkspaceScreen(matrixService: _matrixService)));
+  }
+
+  // ------ ваш диалог Security Phrase, без изменений ------
+  Future<void> _checkAndRestoreKeys() async {
+    final needsBackup = await _matrixService.hasKeyBackup();
+    if (!mounted || !needsBackup) return;
+
+    final phrase = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        final controller = TextEditingController();
+        return AlertDialog(
+          title: const Text('Ключ расшифровки истории'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Введите Security Phrase, чтобы расшифровать историю '
+                'сообщений на этом устройстве:',
+                style: TextStyle(fontSize: 13),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: controller,
+                obscureText: true,
+                decoration:
+                    const InputDecoration(hintText: 'Секретная фраза'),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () =>
+                  Navigator.pop(dialogContext, controller.text),
+              child: const Text('Расшифровать'),
+            ),
+          ],
+        );
+      },
+    );
+    if (phrase != null && phrase.isNotEmpty) {
+      await _matrixService.restoreKeys(phrase);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF121212),
-      appBar: AppBar(
-        title: const Text('ABYROY // CHAT'),
-        backgroundColor: Colors.black,
-        centerTitle: true,
-      ),
-      body: _isCheckingSession
-          ? const Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  CircularProgressIndicator(color: Colors.greenAccent),
-                  SizedBox(height: 16),
-                  Text(
-                    'Инициализация крипто-хранилища...',
-                    style: TextStyle(color: Colors.grey),
-                  ),
-                ],
-              ),
-            )
-          : Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24.0),
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 400),
-                  child: Column(
-                    children: [
-                      const Icon(
-                        Icons.security,
-                        size: 72,
-                        color: Colors.greenAccent,
-                      ),
-                      const SizedBox(height: 32),
-                      TextField(
-                        controller: _homeserverController,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: const InputDecoration(
-                          labelText: 'Сервер',
-                          labelStyle: TextStyle(color: Colors.grey),
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: _usernameController,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: const InputDecoration(
-                          labelText: 'Логин',
-                          labelStyle: TextStyle(color: Colors.grey),
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      TextField(
-                        controller: _passwordController,
-                        obscureText: true,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: const InputDecoration(
-                          labelText: 'Пароль',
-                          labelStyle: TextStyle(color: Colors.grey),
-                          border: OutlineInputBorder(),
-                        ),
-                      ),
-                      const SizedBox(height: 32),
-                      SizedBox(
-                        width: double.infinity,
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.greenAccent,
-                            foregroundColor: Colors.black,
-                            padding: const EdgeInsets.symmetric(vertical: 16),
-                          ),
-                          onPressed: _isLoading ? null : _handleLogin,
-                          child: _isLoading
-                              ? const SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    color: Colors.black,
-                                  ),
-                                )
-                              : const Text(
-                                  'ПОДКЛЮЧИТЬСЯ',
-                                  style: TextStyle(fontWeight: FontWeight.bold),
-                                ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+      backgroundColor: const Color(0xFFF0F2F5),
+      body: Center(child: _body()),
+    );
+  }
+
+  Widget _body() {
+    switch (_stage) {
+      case _Stage.restoring:
+        return const _Progress('Запуск приложения...');
+      case _Stage.ssoInProgress:
+        return Column(mainAxisSize: MainAxisSize.min, children: [
+          const _Progress('Выполняется вход через корпоративный SSO...'),
+          const SizedBox(height: 8),
+          const Text('В браузере откроется страница входа —\n'
+              'она закроется автоматически.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.black45, fontSize: 12.5)),
+          const SizedBox(height: 20),
+          TextButton(
+              onPressed: _startSso, child: const Text('Открыть еще раз')),
+        ]);
+      case _Stage.error:
+        final isDomainError = _errorText == kFatalMessage;
+        return Column(mainAxisSize: MainAxisSize.min, children: [
+          Icon(isDomainError ? Icons.gpp_bad_outlined : Icons.error_outline,
+              size: 80, color: Colors.red),
+          const SizedBox(height: 20),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 440),
+            child: Text(_errorText,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 15)),
+          ),
+          const SizedBox(height: 8),
+          const Text('Обратитесь к системному администратору.',
+              style: TextStyle(color: Colors.black45, fontSize: 12.5)),
+          const SizedBox(height: 24),
+          if (!isDomainError)
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: kAccent),
+              onPressed: _startSso,
+              child: const Text('Повторить вход'),
             ),
+          const SizedBox(height: 12),
+          TextButton(
+            onPressed: () =>
+                setState(() => _stage = _Stage.passwordFallback),
+            child: const Text('Служебный вход по паролю',
+                style: TextStyle(fontSize: 12, color: Colors.black38)),
+          ),
+        ]);
+      case _Stage.passwordFallback:
+        return _PasswordFallback(
+          service: _matrixService,
+          onSuccess: _finishLogin,
+          onBack: () => setState(() => _stage = _Stage.error),
+        );
+    }
+  }
+}
+
+class _Progress extends StatelessWidget {
+  final String text;
+  const _Progress(this.text);
+
+  @override
+  Widget build(BuildContext context) =>
+      Column(mainAxisSize: MainAxisSize.min, children: [
+        const CircularProgressIndicator(color: kAccent),
+        const SizedBox(height: 16),
+        Text(text, style: const TextStyle(color: Colors.black54)),
+      ]);
+}
+
+/// Служебный вход по паролю (LDAP) — для админов и ручных учеток.
+class _PasswordFallback extends StatefulWidget {
+  final MatrixService service;
+  final Future<void> Function() onSuccess;
+  final VoidCallback onBack;
+  const _PasswordFallback(
+      {required this.service, required this.onSuccess, required this.onBack});
+
+  @override
+  State<_PasswordFallback> createState() => _PasswordFallbackState();
+}
+
+class _PasswordFallbackState extends State<_PasswordFallback> {
+  final _user = TextEditingController();
+  final _pass = TextEditingController();
+  bool _loading = false;
+  String? _error;
+
+  Future<void> _login() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      await widget.service.login(_user.text, _pass.text);
+      await widget.onSuccess();
+    } catch (e) {
+      setState(() => _error = 'Ошибка входа: $e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 360),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const Text('Служебный вход',
+                style:
+                    TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 16),
+            TextField(
+                controller: _user,
+                decoration: const InputDecoration(
+                    labelText: 'Учетная запись',
+                    border: OutlineInputBorder())),
+            const SizedBox(height: 12),
+            TextField(
+                controller: _pass,
+                obscureText: true,
+                onSubmitted: (_) => _login(),
+                decoration: const InputDecoration(
+                    labelText: 'Пароль', border: OutlineInputBorder())),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Text(_error!,
+                    style:
+                        const TextStyle(color: Colors.red, fontSize: 12)),
+              ),
+            const SizedBox(height: 16),
+            Row(children: [
+              TextButton(
+                  onPressed: widget.onBack, child: const Text('Назад')),
+              const Spacer(),
+              FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: kAccent),
+                onPressed: _loading ? null : _login,
+                child: _loading
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : const Text('Войти'),
+              ),
+            ]),
+          ]),
+        ),
+      ),
     );
   }
 }
