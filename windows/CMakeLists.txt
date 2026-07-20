@@ -52,7 +52,6 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
-
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)
@@ -73,6 +72,16 @@ set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")
 
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  COMPONENT Runtime)
+
+# Кладём MSVC runtime DLL рядом с exe, чтобы приложение запускалось на
+# машинах без установленного Visual C++ Redistributable. Файлы лежат в
+# windows/runtime/ и копируются на каждой сборке (в т.ч. после flutter clean).
+install(FILES
+  "${CMAKE_CURRENT_SOURCE_DIR}/runtime/msvcp140.dll"
+  "${CMAKE_CURRENT_SOURCE_DIR}/runtime/vcruntime140.dll"
+  "${CMAKE_CURRENT_SOURCE_DIR}/runtime/vcruntime140_1.dll"
+  DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"

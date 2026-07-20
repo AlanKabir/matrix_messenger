@@ -2,6 +2,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart';
 import 'package:path_provider/path_provider.dart';
+
+import 'app_theme.dart';
 import 'screens/login_screen.dart';
 
 void main() async {
@@ -26,11 +28,8 @@ void main() async {
   runApp(
     MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Abyroy мессенджер',
-      theme: ThemeData(
-        useMaterial3: true,
-        colorSchemeSeed: const Color(0xFF128C7E),
-      ),
+      title: 'Мессенджер SGO',
+      theme: T.theme(),
       home: const LoginScreen(),
     ),
   );

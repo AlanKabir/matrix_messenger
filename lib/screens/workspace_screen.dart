@@ -1,16 +1,16 @@
-// screens/workspace_screen.dart — ваш двухпанельный workspace,
-// перестилизованный под WhatsApp (по ТЗ) + создание группы.
-// Логика (onSync.stream, выбор комнаты, поиск, сеансы, logout) — ваша.
+// screens/workspace_screen.dart — двухпанельный workspace в стиле SGO.
+// Сверху боковой панели: «Новая группа» и «Найти сотрудника или группу».
+// Снизу: строка профиля, открывающая экран «Настройки».
 
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
+import '../app_theme.dart';
 import '../services/matrix_service.dart';
 import '../widgets/common.dart';
 import 'chat_panel.dart';
-import 'login_screen.dart';
 import 'new_chat_search_sheet.dart';
-import 'sessions_screen.dart';
+import 'settings_screen.dart';
 
 class WorkspaceScreen extends StatefulWidget {
   final MatrixService matrixService;
@@ -22,6 +22,7 @@ class WorkspaceScreen extends StatefulWidget {
 
 class _WorkspaceScreenState extends State<WorkspaceScreen> {
   late final matrix.Client _client;
+  late final Future<matrix.Profile> _ownProfile;
   matrix.Room? _selectedRoom;
 
   final TextEditingController _searchController = TextEditingController();
@@ -31,6 +32,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   void initState() {
     super.initState();
     _client = widget.matrixService.client!;
+    _ownProfile = _client.fetchOwnProfile();
     _searchController.addListener(() {
       setState(
         () => _searchQuery = _searchController.text.trim().toLowerCase(),
@@ -44,16 +46,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     super.dispose();
   }
 
-  Future<void> _logout() async {
-    // Через сервис: он гасит подписку на приглашения, потом logout.
-    await widget.matrixService.logout();
-    if (mounted) {
-      Navigator.of(
-        context,
-      ).pushReplacement(MaterialPageRoute(builder: (_) => const LoginScreen()));
-    }
-  }
-
   void _openNewChatSearch() {
     showModalBottomSheet(
       context: context,
@@ -63,8 +55,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
       builder: (context) => NewChatSearchSheet(
-        // Передаём сервис, а не голый client, чтобы личный чат
-        // создавался через дедуп/автоприём.
         service: widget.matrixService,
         onChatOpened: (room) {
           Navigator.pop(context);
@@ -104,14 +94,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
     final room = _client.getRoomById(roomId);
     if (room != null) {
-      // Участников добавляют через поиск сотрудника → room.invite(userId).
       setState(() => _selectedRoom = room);
     }
   }
 
   // «Удалить чат»: локальное скрытие для меня (clearChat). Комнату не покидаю,
-  // историю на сервере не трогаю. У собеседника чат и переписка остаются.
-  // При новом сообщении чат сам вернётся в список — но уже пустым для меня.
+  // историю на сервере не трогаю. При новом сообщении чат вернётся пустым.
   Future<void> _deleteChat(matrix.Room room) async {
     final title = room.getLocalizedDisplayname();
     final confirm = await showDialog<bool>(
@@ -154,6 +142,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     }
   }
 
+  void _openSettings() {
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SettingsScreen(service: widget.matrixService),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -161,16 +157,20 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       body: Row(
         children: [
           SizedBox(
-            width: 360,
-            child: Column(
-              children: [
-                _header(),
-                _searchBar(),
-                Expanded(child: _roomList()),
-              ],
+            width: 340,
+            child: Container(
+              color: T.panel,
+              child: Column(
+                children: [
+                  _header(),
+                  _searchBar(),
+                  Expanded(child: _roomList()),
+                  _profileTile(),
+                ],
+              ),
             ),
           ),
-          const VerticalDivider(width: 1),
+          const VerticalDivider(width: 1, color: T.border),
           Expanded(
             child: _selectedRoom == null
                 ? _emptyPlaceholder()
@@ -185,75 +185,44 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
-  Widget _header() {
-    final me = _client.userID ?? '';
-    return Container(
-      color: kAccent,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: Row(
-        children: [
-          Expanded(
-            child: FutureBuilder<matrix.Profile>(
-              future: _client.fetchOwnProfile(),
-              builder: (_, snap) => Text(
-                snap.data?.displayName ?? me,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 15,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+  Widget _header() => Container(
+    color: T.panel,
+    padding: const EdgeInsets.fromLTRB(16, 14, 6, 6),
+    child: Row(
+      children: [
+        const Expanded(
+          child: Text(
+            'Чаты',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.w600,
+              color: T.accent,
+              letterSpacing: -0.2,
             ),
           ),
-          IconButton(
-            tooltip: 'Новая группа',
-            icon: const Icon(Icons.group_add, color: Colors.white70, size: 20),
-            onPressed: _createGroup,
-          ),
-          IconButton(
-            tooltip: 'Найти сотрудника или группу',
-            icon: const Icon(
-              Icons.person_add_alt,
-              color: Colors.white70,
-              size: 20,
-            ),
-            onPressed: _openNewChatSearch,
-          ),
-          IconButton(
-            tooltip: 'Мои сеансы',
-            icon: const Icon(Icons.devices, color: Colors.white70, size: 20),
-            onPressed: () {
-              Navigator.of(context).push(
-                MaterialPageRoute(
-                  builder: (_) => SessionsScreen(
-                    client: _client,
-                    onLogoutCurrentDevice: () {
-                      Navigator.of(context).pop();
-                      _logout();
-                    },
-                  ),
-                ),
-              );
-            },
-          ),
-          IconButton(
-            tooltip: 'Выйти',
-            icon: const Icon(Icons.logout, color: Colors.white54, size: 20),
-            onPressed: _logout,
-          ),
-        ],
-      ),
-    );
-  }
+        ),
+        IconButton(
+          tooltip: 'Новая группа',
+          icon: const Icon(Icons.group_add, color: T.accent, size: 22),
+          onPressed: _createGroup,
+        ),
+        IconButton(
+          tooltip: 'Найти сотрудника или группу',
+          icon: const Icon(Icons.person_add_alt, color: T.accent, size: 22),
+          onPressed: _openNewChatSearch,
+        ),
+      ],
+    ),
+  );
 
   Widget _searchBar() => Padding(
-    padding: const EdgeInsets.all(8),
+    padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
     child: TextField(
       controller: _searchController,
       decoration: InputDecoration(
-        hintText: 'Поиск по чатам',
-        prefixIcon: const Icon(Icons.search, size: 20),
+        hintText: 'Поиск',
+        hintStyle: const TextStyle(color: T.hint, fontSize: 14),
+        prefixIcon: const Icon(Icons.search, size: 20, color: T.hint),
         suffixIcon: _searchQuery.isNotEmpty
             ? IconButton(
                 icon: const Icon(Icons.close, size: 16),
@@ -261,7 +230,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               )
             : null,
         isDense: true,
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(20)),
+        filled: true,
+        fillColor: const Color(0xFFE6EBF3),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(10),
+          borderSide: BorderSide.none,
+        ),
       ),
     ),
   );
@@ -270,8 +244,6 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return StreamBuilder(
       stream: _client.onSync.stream,
       builder: (context, snapshot) {
-        // Показываем только joined-комнаты, которые не «удалены» (скрыты).
-        // Приглашения автоматически принимаются в MatrixService.
         var rooms = _client.rooms
             .where((r) => r.membership == matrix.Membership.join)
             .where((r) => widget.matrixService.isRoomVisible(r))
@@ -291,7 +263,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
               _searchQuery.isNotEmpty
                   ? 'Ничего не найдено'
                   : 'Нет активных чатов',
-              style: const TextStyle(color: Colors.black45, fontSize: 13),
+              style: const TextStyle(color: T.textSec, fontSize: 13),
             ),
           );
         }
@@ -304,46 +276,55 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             final title = room.getLocalizedDisplayname();
             final lastMsg = room.lastEvent?.body ?? 'Нет сообщений';
 
-            // Правый клик (десктоп) — удалить чат.
-            return GestureDetector(
-              onSecondaryTap: () => _deleteChat(room),
-              child: ListTile(
-                selected: isSelected,
-                selectedTileColor: const Color(0xFFF0F6F4),
-                leading: InitialsAvatar(name: title, group: !room.isDirectChat),
-                title: Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                subtitle: Text(
-                  lastMsg,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontSize: 12.5),
-                ),
-                trailing: unread > 0
-                    ? Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 7,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF25D366),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          '$unread',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 11,
+            return Material(
+              color: Colors.transparent,
+              child: GestureDetector(
+                onSecondaryTap: () => _deleteChat(room),
+                child: ListTile(
+                  selected: isSelected,
+                  selectedTileColor: T.selected,
+                  leading: InitialsAvatar(
+                    name: title,
+                    group: !room.isDirectChat,
+                  ),
+                  title: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w500,
+                      color: T.text,
+                    ),
+                  ),
+                  subtitle: Text(
+                    lastMsg,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 12.5, color: T.textSec),
+                  ),
+                  trailing: unread > 0
+                      ? Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 2,
                           ),
-                        ),
-                      )
-                    : null,
-                onTap: () => setState(() => _selectedRoom = room),
-                // Долгое нажатие — удалить чат (для тач/мыши).
-                onLongPress: () => _deleteChat(room),
+                          decoration: BoxDecoration(
+                            color: T.unreadBadge,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            '$unread',
+                            style: const TextStyle(
+                              color: T.unreadBadgeText,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        )
+                      : null,
+                  onTap: () => setState(() => _selectedRoom = room),
+                  onLongPress: () => _deleteChat(room),
+                ),
               ),
             );
           },
@@ -352,17 +333,60 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  // Строка профиля внизу боковой панели → открывает «Настройки».
+  Widget _profileTile() {
+    final me = _client.userID ?? '';
+    return Material(
+      color: T.panel,
+      child: InkWell(
+        onTap: _openSettings,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          decoration: const BoxDecoration(
+            border: Border(top: BorderSide(color: T.border)),
+          ),
+          child: Row(
+            children: [
+              FutureBuilder<matrix.Profile>(
+                future: _ownProfile,
+                builder: (_, snap) => InitialsAvatar(
+                  name: snap.data?.displayName ?? me,
+                  radius: 16,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: FutureBuilder<matrix.Profile>(
+                  future: _ownProfile,
+                  builder: (_, snap) => Text(
+                    snap.data?.displayName ?? me,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w500,
+                      color: T.text,
+                    ),
+                  ),
+                ),
+              ),
+              const Icon(Icons.settings, color: T.hint, size: 20),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _emptyPlaceholder() => Container(
-    color: const Color(0xFFF0F2F5),
+    color: T.feedBg,
     child: const Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.forum_outlined, size: 96, color: Colors.black26),
+          Icon(Icons.forum_outlined, size: 96, color: Color(0xFFC3CCDA)),
           SizedBox(height: 16),
           Text(
             'Выберите чат или найдите сотрудника',
-            style: TextStyle(color: Colors.black45),
+            style: TextStyle(color: T.textSec),
           ),
         ],
       ),

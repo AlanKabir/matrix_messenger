@@ -3,9 +3,13 @@
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
-const kAccent = Color(0xFF128C7E); // фирменный зеленый WhatsApp
-const kTickGray = Color(0xFF8696A0);
-const kTickBlue = Color(0xFF53BDEB);
+import '../app_theme.dart';
+
+// Единый источник цвета — палитра T. kAccent оставлен для обратной
+// совместимости со старым кодом, который на него ссылается.
+const kAccent = T.accent;
+const kTickGray = T.tickSent;
+const kTickBlue = T.tickRead;
 
 /// Статус собственного сообщения в терминах Matrix:
 ///  -1 — отправляется (часы), -2 — ошибка,
@@ -60,12 +64,22 @@ class InitialsAvatar extends StatelessWidget {
     this.group = false,
   });
 
+  // Стабильный цвет по имени: одинаковое имя всегда одного цвета.
+  Color _colorFor(String key) {
+    if (key.isEmpty) return T.accent;
+    var hash = 0;
+    for (final code in key.codeUnits) {
+      hash = (hash * 31 + code) & 0x7fffffff;
+    }
+    return T.avatarColors[hash % T.avatarColors.length];
+  }
+
   @override
   Widget build(BuildContext context) {
     if (group) {
       return CircleAvatar(
         radius: radius,
-        backgroundColor: kAccent,
+        backgroundColor: T.accent,
         child: Icon(Icons.group, color: Colors.white, size: radius),
       );
     }
@@ -78,7 +92,7 @@ class InitialsAvatar extends StatelessWidget {
         .join();
     return CircleAvatar(
       radius: radius,
-      backgroundColor: kAccent,
+      backgroundColor: _colorFor(name),
       child: Text(
         initials.isEmpty ? '?' : initials,
         style: TextStyle(color: Colors.white, fontSize: radius * 0.7),
@@ -164,10 +178,7 @@ Future<matrix.Room?> showForwardPicker(
                           padding: EdgeInsets.fromLTRB(16, 12, 16, 4),
                           child: Text(
                             'Сотрудники',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.black54,
-                            ),
+                            style: TextStyle(fontSize: 12, color: T.textSec),
                           ),
                         ),
                       for (final u in found)

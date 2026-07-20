@@ -1,12 +1,13 @@
-// screens/chat_panel.dart — окно переписки. Логика Timeline
-// (getTimeline + onUpdate + setReadMarker) сохранена; поверх нее:
-// стиль WhatsApp, галочки, отправка файлов, inline-предпросмотр, пересылка.
+// screens/chat_panel.dart — окно переписки в стиле SGO (сине-золотой).
+// Логика Timeline (getTimeline + onUpdate + setReadMarker) сохранена;
+// плюс фильтр по cleared_ts (пустой чат после удаления), файлы, пересылка.
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
+import '../app_theme.dart';
 import '../services/matrix_service.dart';
 import '../widgets/common.dart';
 import '../widgets/file_preview.dart';
@@ -31,8 +32,6 @@ class _ChatPanelState extends State<ChatPanel> {
         if (mounted) setState(() {});
       },
     );
-    // Открыли чат → отмечаем прочитанным (read receipt уходит собеседнику,
-    // у него сообщения становятся «2 синие»).
     _timelineFuture.then((t) => t.setReadMarker());
   }
 
@@ -99,7 +98,7 @@ class _ChatPanelState extends State<ChatPanel> {
       children: [
         // ------ шапка ------
         Container(
-          color: const Color(0xFFF0F2F5),
+          color: T.panelAlt,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
             children: [
@@ -111,7 +110,11 @@ class _ChatPanelState extends State<ChatPanel> {
                   children: [
                     Text(
                       title,
-                      style: const TextStyle(fontWeight: FontWeight.w600),
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                        color: T.accent,
+                      ),
                     ),
                     Text(
                       isGroup
@@ -119,10 +122,7 @@ class _ChatPanelState extends State<ChatPanel> {
                           : room.directChatMatrixID ?? '',
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        color: Colors.black54,
-                      ),
+                      style: const TextStyle(fontSize: 12, color: T.textSec),
                     ),
                   ],
                 ),
@@ -130,22 +130,22 @@ class _ChatPanelState extends State<ChatPanel> {
               if (room.encrypted)
                 const Tooltip(
                   message: 'Сквозное шифрование включено',
-                  child: Icon(Icons.lock, size: 16, color: kAccent),
+                  child: Icon(Icons.lock, size: 16, color: T.accent),
                 ),
             ],
           ),
         ),
-        const Divider(height: 1),
+        const Divider(height: 1, color: T.border),
         // ------ лента ------
         Expanded(
           child: Container(
-            color: const Color(0xFFEFEAE2),
+            color: T.feedBg,
             child: FutureBuilder<matrix.Timeline>(
               future: _timelineFuture,
               builder: (context, snapshot) {
                 if (snapshot.connectionState == ConnectionState.waiting) {
                   return const Center(
-                    child: CircularProgressIndicator(color: kAccent),
+                    child: CircularProgressIndicator(color: T.accent),
                   );
                 }
                 if (!snapshot.hasData || snapshot.hasError) {
@@ -157,8 +157,7 @@ class _ChatPanelState extends State<ChatPanel> {
                   );
                 }
                 // Если чат был «удалён» — показываем только сообщения ПОЗЖЕ
-                // метки удаления. Старая история скрыта у меня (у собеседника
-                // остаётся), поэтому вернувшийся чат открывается пустым.
+                // метки удаления (старая история скрыта у меня).
                 final clearedTs = widget.service.clearedTsFor(room.id);
                 final events = snapshot.data!.events
                     .where(
@@ -175,14 +174,14 @@ class _ChatPanelState extends State<ChatPanel> {
                   return const Center(
                     child: Text(
                       'Нет сообщений. Напишите первое.',
-                      style: TextStyle(color: Colors.black38),
+                      style: TextStyle(color: T.hint),
                     ),
                   );
                 }
                 return ListView.builder(
                   reverse: true,
                   padding: const EdgeInsets.symmetric(
-                    vertical: 12,
+                    vertical: 14,
                     horizontal: 40,
                   ),
                   itemCount: events.length,
@@ -205,13 +204,13 @@ class _ChatPanelState extends State<ChatPanel> {
         ),
         // ------ композер ------
         Container(
-          color: const Color(0xFFF0F2F5),
+          color: T.panelAlt,
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Row(
             children: [
               IconButton(
                 tooltip: 'Прикрепить файл',
-                icon: const Icon(Icons.attach_file, color: Color(0xFF54656F)),
+                icon: const Icon(Icons.attach_file, color: T.hint),
                 onPressed: _attachFile,
               ),
               Expanded(
@@ -226,13 +225,17 @@ class _ChatPanelState extends State<ChatPanel> {
                     maxLines: 5,
                     textInputAction: TextInputAction.newline,
                     decoration: InputDecoration(
-                      hintText:
-                          'Введите сообщение (Enter — отправить, Shift+Enter — перенос)',
+                      hintText: 'Сообщение…',
+                      hintStyle: const TextStyle(color: T.hint),
                       filled: true,
-                      fillColor: Colors.white,
+                      fillColor: const Color(0xFFF2F5F9),
                       isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
                       border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(24),
+                        borderRadius: BorderRadius.circular(22),
                         borderSide: BorderSide.none,
                       ),
                     ),
@@ -241,8 +244,12 @@ class _ChatPanelState extends State<ChatPanel> {
               ),
               const SizedBox(width: 8),
               IconButton.filled(
-                style: IconButton.styleFrom(backgroundColor: kAccent),
-                icon: const Icon(Icons.send, color: Colors.white, size: 18),
+                style: IconButton.styleFrom(backgroundColor: T.gold),
+                icon: const Icon(
+                  Icons.arrow_upward,
+                  color: Colors.white,
+                  size: 20,
+                ),
                 onPressed: _sendMessage,
               ),
             ],
@@ -277,6 +284,25 @@ class _Bubble extends StatelessWidget {
       event.messageType == matrix.MessageTypes.Video ||
       event.messageType == matrix.MessageTypes.Audio;
 
+  // Галочки статуса на СИНЕМ пузыре — светлые (иначе не видно).
+  Widget _ownTicks(int status) {
+    switch (status) {
+      case -2:
+        return const Icon(
+          Icons.error_outline,
+          size: 14,
+          color: Colors.amberAccent,
+        );
+      case -1:
+        return const Icon(Icons.schedule, size: 14, color: Colors.white54);
+      case 2:
+        return const Icon(Icons.done_all, size: 15, color: Colors.white);
+      case 0:
+      default:
+        return const Icon(Icons.check, size: 15, color: Colors.white70);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final ts = event.originServerTs;
@@ -290,6 +316,9 @@ class _Bubble extends StatelessWidget {
         (bodyText.isEmpty || bodyText.contains('Unknown'));
     if (waitingKeys) bodyText = '⏳ Идет запрос ключей шифрования...';
 
+    final textColor = isOwn ? Colors.white : T.text;
+    final metaColor = isOwn ? Colors.white70 : T.hint;
+
     return Align(
       alignment: isOwn ? Alignment.centerRight : Alignment.centerLeft,
       child: GestureDetector(
@@ -298,16 +327,15 @@ class _Bubble extends StatelessWidget {
         child: Container(
           constraints: const BoxConstraints(maxWidth: 520),
           margin: const EdgeInsets.symmetric(vertical: 3),
-          padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
           decoration: BoxDecoration(
-            color: isOwn ? const Color(0xFFD9FDD3) : Colors.white,
+            color: isOwn ? T.ownBubble : T.inBubble,
             borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(10),
-              topRight: const Radius.circular(10),
-              bottomLeft: Radius.circular(isOwn ? 10 : 2),
-              bottomRight: Radius.circular(isOwn ? 2 : 10),
+              topLeft: const Radius.circular(16),
+              topRight: const Radius.circular(16),
+              bottomLeft: Radius.circular(isOwn ? 16 : 5),
+              bottomRight: Radius.circular(isOwn ? 5 : 16),
             ),
-            boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 1)],
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -321,7 +349,7 @@ class _Bubble extends StatelessWidget {
                     style: const TextStyle(
                       fontSize: 12.5,
                       fontWeight: FontWeight.w600,
-                      color: kAccent,
+                      color: T.steel,
                     ),
                   ),
                 ),
@@ -331,18 +359,14 @@ class _Bubble extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(
-                        Icons.shortcut,
-                        size: 14,
-                        color: Colors.black45,
-                      ),
+                      Icon(Icons.shortcut, size: 14, color: metaColor),
                       const SizedBox(width: 4),
                       Text(
                         'Переслано от $fwdFrom',
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 12,
                           fontStyle: FontStyle.italic,
-                          color: Colors.black45,
+                          color: metaColor,
                         ),
                       ),
                     ],
@@ -353,7 +377,11 @@ class _Bubble extends StatelessWidget {
               else
                 Text(
                   bodyText,
-                  style: const TextStyle(fontSize: 14.5, height: 1.3),
+                  style: TextStyle(
+                    fontSize: 14.5,
+                    height: 1.3,
+                    color: textColor,
+                  ),
                 ),
               const SizedBox(height: 2),
               Row(
@@ -361,11 +389,11 @@ class _Bubble extends StatelessWidget {
                 children: [
                   Text(
                     timeStr,
-                    style: const TextStyle(fontSize: 11, color: Colors.black45),
+                    style: TextStyle(fontSize: 11, color: metaColor),
                   ),
                   if (isOwn) ...[
                     const SizedBox(width: 4),
-                    StatusTicks(status: ownEventStatus(event, room)),
+                    _ownTicks(ownEventStatus(event, room)),
                   ],
                 ],
               ),
