@@ -116,14 +116,13 @@ class _ChatPanelState extends State<ChatPanel> {
                         color: T.accent,
                       ),
                     ),
-                    Text(
-                      isGroup
-                          ? '${room.getParticipants().length} участников'
-                          : room.directChatMatrixID ?? '',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontSize: 12, color: T.textSec),
-                    ),
+                    if (isGroup)
+                      Text(
+                        '${room.getParticipants().length} участников',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 12, color: T.textSec),
+                      ),
                   ],
                 ),
               ),

@@ -11,6 +11,7 @@ import '../widgets/common.dart';
 import 'chat_panel.dart';
 import 'new_chat_search_sheet.dart';
 import 'settings_screen.dart';
+import '../services/desktop_service.dart';
 
 class WorkspaceScreen extends StatefulWidget {
   final MatrixService matrixService;
@@ -33,6 +34,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     super.initState();
     _client = widget.matrixService.client!;
     _ownProfile = _client.fetchOwnProfile();
+    // Подключаем уведомления/трей к текущему клиенту.
+    DesktopService.instance.attachClient(_client);
     _searchController.addListener(() {
       setState(
         () => _searchQuery = _searchController.text.trim().toLowerCase(),

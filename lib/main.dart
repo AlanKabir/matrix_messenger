@@ -1,9 +1,12 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:local_notifier/local_notifier.dart';
 import 'package:matrix/matrix.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'app_theme.dart';
+import 'services/desktop_service.dart';
 import 'screens/login_screen.dart';
 
 void main() async {
@@ -24,6 +27,23 @@ void main() async {
     }
     origDebugPrint(message, wrapWidth: wrapWidth);
   };
+
+  // --- окно, трей, уведомления (Windows) ---
+  await windowManager.ensureInitialized();
+  await windowManager.waitUntilReadyToShow(
+    const WindowOptions(
+      size: Size(1100, 720),
+      minimumSize: Size(800, 560),
+      center: true,
+      title: 'Мессенджер SGO',
+    ),
+    () async {
+      await windowManager.show();
+      await windowManager.focus();
+    },
+  );
+  await localNotifier.setup(appName: 'Мессенджер SGO');
+  await DesktopService.instance.init();
 
   runApp(
     MaterialApp(

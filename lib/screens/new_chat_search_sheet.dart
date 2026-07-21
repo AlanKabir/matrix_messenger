@@ -2,12 +2,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
+import '../app_theme.dart';
 import '../services/matrix_service.dart';
+import '../widgets/common.dart';
 
 class NewChatSearchSheet extends StatefulWidget {
-  // Раньше сюда передавали голый matrix.Client, и поиск дёргал
-  // client.startDirectChat напрямую — в обход дедупа/автоприёма.
-  // Теперь принимаем MatrixService, чтобы личный чат создавался через него.
   final MatrixService service;
   final void Function(matrix.Room room) onChatOpened;
 
@@ -34,7 +33,6 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
   List<matrix.Profile> _userResults = [];
   List<matrix.PublishedRoomsChunk> _roomResults = [];
 
-  // Короткий доступ к клиенту для поиска.
   matrix.Client get _client => widget.service.client!;
 
   @override
@@ -70,37 +68,25 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
       if (_tab == _SearchTab.people) {
         final response = await _client.searchUserDirectory(query, limit: 20);
         if (!mounted) return;
-        setState(() {
-          _userResults = response.results;
-        });
+        setState(() => _userResults = response.results);
       } else {
         final response = await _client.queryPublicRooms(
           filter: matrix.PublicRoomQueryFilter(genericSearchTerm: query),
         );
         if (!mounted) return;
-        setState(() {
-          _roomResults = response.chunk;
-        });
+        setState(() => _roomResults = response.chunk);
       }
     } catch (e) {
       if (!mounted) return;
-      setState(() {
-        _error = 'Ошибка поиска: $e';
-      });
+      setState(() => _error = 'Ошибка поиска: $e');
     } finally {
-      if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
-      }
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
   Future<void> _startDirectChat(String userId) async {
     setState(() => _isLoading = true);
     try {
-      // Через сервис: он переиспользует существующий ЛС и принимает
-      // приглашение, если оно уже висит — дубли больше не плодятся.
       final room = await widget.service.startDirectChat(userId);
       if (!mounted) return;
       if (room != null) {
@@ -121,9 +107,7 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
       await _client.joinRoom(roomId);
       final room = _client.getRoomById(roomId);
       if (!mounted) return;
-      if (room != null) {
-        widget.onChatOpened(room);
-      }
+      if (room != null) widget.onChatOpened(room);
     } catch (e) {
       if (mounted) setState(() => _error = 'Не удалось присоединиться: $e');
     } finally {
@@ -146,7 +130,7 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
               width: 40,
               height: 4,
               decoration: BoxDecoration(
-                color: const Color(0xFF333333),
+                color: const Color(0xFFD5DBE2),
                 borderRadius: BorderRadius.circular(2),
               ),
             ),
@@ -159,18 +143,15 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
                 controller: _controller,
                 autofocus: true,
                 onChanged: _onQueryChanged,
-                style: const TextStyle(color: Colors.white),
+                style: const TextStyle(color: T.text),
                 decoration: InputDecoration(
                   hintText: _tab == _SearchTab.people
                       ? 'Введите имя или логин...'
                       : 'Введите название группы...',
-                  hintStyle: const TextStyle(color: Color(0xFF666666)),
-                  prefixIcon: const Icon(
-                    Icons.search,
-                    color: Color(0xFF666666),
-                  ),
+                  hintStyle: const TextStyle(color: T.hint),
+                  prefixIcon: const Icon(Icons.search, color: T.hint),
                   filled: true,
-                  fillColor: const Color(0xFF1F1F1F),
+                  fillColor: const Color(0xFFE6EBF3),
                   border: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(10),
                     borderSide: BorderSide.none,
@@ -217,29 +198,19 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
       child: Container(
         padding: const EdgeInsets.symmetric(vertical: 10),
         decoration: BoxDecoration(
-          color: isActive ? const Color(0xFF0D3823) : const Color(0xFF1F1F1F),
+          color: isActive ? T.selected : const Color(0xFFF2F5F9),
           borderRadius: BorderRadius.circular(10),
-          border: isActive
-              ? Border.all(color: const Color(0xFF00E676), width: 1)
-              : null,
+          border: isActive ? Border.all(color: T.accent, width: 1) : null,
         ),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              icon,
-              size: 16,
-              color: isActive
-                  ? const Color(0xFF00E676)
-                  : const Color(0xFF888888),
-            ),
+            Icon(icon, size: 16, color: isActive ? T.accent : T.hint),
             const SizedBox(width: 6),
             Text(
               label,
               style: TextStyle(
-                color: isActive
-                    ? const Color(0xFF00E676)
-                    : const Color(0xFF888888),
+                color: isActive ? T.accent : T.textSec,
                 fontWeight: FontWeight.w600,
                 fontSize: 13,
               ),
@@ -252,9 +223,7 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
 
   Widget _buildResultsList() {
     if (_isLoading) {
-      return const Center(
-        child: CircularProgressIndicator(color: Color(0xFF00E676)),
-      );
+      return const Center(child: CircularProgressIndicator(color: T.accent));
     }
     if (_error != null) {
       return Center(
@@ -265,7 +234,7 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
       return const Center(
         child: Text(
           'Начните вводить имя для поиска',
-          style: TextStyle(color: Color(0xFF555555), fontSize: 13),
+          style: TextStyle(color: T.hint, fontSize: 13),
         ),
       );
     }
@@ -273,10 +242,7 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
     if (_tab == _SearchTab.people) {
       if (_userResults.isEmpty) {
         return const Center(
-          child: Text(
-            'Никого не найдено',
-            style: TextStyle(color: Color(0xFF555555)),
-          ),
+          child: Text('Никого не найдено', style: TextStyle(color: T.hint)),
         );
       }
       return ListView.builder(
@@ -288,17 +254,11 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
               ? user.displayName!
               : user.userId;
           return ListTile(
-            leading: CircleAvatar(
-              backgroundColor: const Color(0xFF222222),
-              child: Text(
-                title[0].toUpperCase(),
-                style: const TextStyle(color: Color(0xFF00E676)),
-              ),
-            ),
-            title: Text(title, style: const TextStyle(color: Colors.white)),
+            leading: InitialsAvatar(name: title, radius: 20),
+            title: Text(title, style: const TextStyle(color: T.text)),
             subtitle: Text(
               user.userId,
-              style: const TextStyle(color: Color(0xFF888888), fontSize: 12),
+              style: const TextStyle(color: T.textSec, fontSize: 12),
             ),
             onTap: () => _startDirectChat(user.userId),
           );
@@ -307,10 +267,7 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
     } else {
       if (_roomResults.isEmpty) {
         return const Center(
-          child: Text(
-            'Групп не найдено',
-            style: TextStyle(color: Color(0xFF555555)),
-          ),
+          child: Text('Групп не найдено', style: TextStyle(color: T.hint)),
         );
       }
       return ListView.builder(
@@ -322,14 +279,11 @@ class _NewChatSearchSheetState extends State<NewChatSearchSheet> {
               ? room.name!
               : room.roomId;
           return ListTile(
-            leading: const CircleAvatar(
-              backgroundColor: Color(0xFF222222),
-              child: Icon(Icons.groups, color: Color(0xFF00E676), size: 18),
-            ),
-            title: Text(title, style: const TextStyle(color: Colors.white)),
+            leading: InitialsAvatar(name: title, radius: 20, group: true),
+            title: Text(title, style: const TextStyle(color: T.text)),
             subtitle: Text(
               '${room.numJoinedMembers} участников',
-              style: const TextStyle(color: Color(0xFF888888), fontSize: 12),
+              style: const TextStyle(color: T.textSec, fontSize: 12),
             ),
             onTap: () => _joinRoom(room.roomId),
           );
