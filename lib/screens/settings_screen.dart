@@ -1,5 +1,11 @@
 // screens/settings_screen.dart — экран «Настройки».
 // Внутри: карточка профиля, «Устройства и сеансы», «Выйти из аккаунта».
+//
+// ВАЖНО: пункты «Устройства и сеансы» и «Выйти из аккаунта» сейчас СКРЫТЫ.
+// Управляется одной строкой ниже — showAccountControls.
+//   false → пунктов нет (текущее состояние)
+//   true  → пункты снова появляются
+// Весь код этих пунктов остаётся в файле, удалять ничего не нужно.
 
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
@@ -9,6 +15,12 @@ import '../services/matrix_service.dart';
 import '../widgets/common.dart';
 import 'login_screen.dart';
 import 'sessions_screen.dart';
+
+// ─────────────────────────────────────────────────────────────
+// ПЕРЕКЛЮЧАТЕЛЬ. Поставь true, чтобы вернуть «Устройства и сеансы»
+// и «Выйти из аккаунта». Сейчас скрыто (false).
+bool showAccountControls = false;
+// ─────────────────────────────────────────────────────────────
 
 class SettingsScreen extends StatelessWidget {
   final MatrixService service;
@@ -122,27 +134,31 @@ class SettingsScreen extends StatelessWidget {
               },
             ),
           ),
-          const SizedBox(height: 22),
 
-          // --- устройства и сеансы ---
-          _group([
-            _tile(
-              icon: Icons.devices,
-              label: 'Устройства и сеансы',
-              onTap: () => _openSessions(context),
-            ),
-          ]),
-          const SizedBox(height: 22),
+          // --- устройства и сеансы (скрыто через showAccountControls) ---
+          if (showAccountControls) ...[
+            const SizedBox(height: 22),
+            _group([
+              _tile(
+                icon: Icons.devices,
+                label: 'Устройства и сеансы',
+                onTap: () => _openSessions(context),
+              ),
+            ]),
+          ],
 
-          // --- выход ---
-          _group([
-            _tile(
-              icon: Icons.logout,
-              label: 'Выйти из аккаунта',
-              danger: true,
-              onTap: () => _confirmLogout(context),
-            ),
-          ]),
+          // --- выход (скрыто через showAccountControls) ---
+          if (showAccountControls) ...[
+            const SizedBox(height: 22),
+            _group([
+              _tile(
+                icon: Icons.logout,
+                label: 'Выйти из аккаунта',
+                danger: true,
+                onTap: () => _confirmLogout(context),
+              ),
+            ]),
+          ],
         ],
       ),
     );

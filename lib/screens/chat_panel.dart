@@ -1,7 +1,9 @@
 // screens/chat_panel.dart — окно переписки в стиле SGO (сине-золотой).
 // Логика Timeline (getTimeline + onUpdate + setReadMarker) сохранена;
 // плюс фильтр по cleared_ts (пустой чат после удаления), файлы, пересылка.
+// Добавлено: перетаскивание файлов (drag-and-drop) прямо в область чата.
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -25,6 +27,9 @@ class ChatPanel extends StatefulWidget {
 class _ChatPanelState extends State<ChatPanel> {
   late Future<matrix.Timeline> _timelineFuture;
   final TextEditingController _messageController = TextEditingController();
+
+  // true, пока файл «висит» над областью чата (для подсветки).
+  bool _dragging = false;
 
   void _loadTimeline() {
     _timelineFuture = widget.room.getTimeline(
@@ -60,13 +65,45 @@ class _ChatPanelState extends State<ChatPanel> {
     _messageController.clear();
   }
 
+  // Единая отправка файла — используется и кнопкой, и перетаскиванием.
+  Future<void> _sendFileBytes(Uint8List bytes, String name) async {
+    await widget.room.sendFileEvent(
+      matrix.MatrixFile(bytes: bytes, name: name),
+    );
+  }
+
+  // Кнопка «прикрепить файл».
   Future<void> _attachFile() async {
     final res = await FilePicker.platform.pickFiles(withData: true);
     final f = res?.files.single;
     if (f == null || f.bytes == null) return;
-    await widget.room.sendFileEvent(
-      matrix.MatrixFile(bytes: f.bytes!, name: f.name),
-    );
+    await _sendFileBytes(f.bytes!, f.name);
+  }
+
+  // Обработка перетащенных файлов (может быть несколько сразу).
+  Future<void> _onDrop(DropDoneDetails detail) async {
+    if (detail.files.isEmpty) return;
+    int sent = 0;
+    for (final file in detail.files) {
+      try {
+        final bytes = await file.readAsBytes();
+        final name = file.name;
+        await _sendFileBytes(bytes, name);
+        sent++;
+      } catch (_) {
+        // Например, бросили папку или файл без прав чтения — пропускаем.
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Не удалось отправить: ${file.name}')),
+          );
+        }
+      }
+    }
+    if (mounted && sent > 1) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Отправлено файлов: $sent')));
+    }
   }
 
   Future<void> _forward(matrix.Event event) async {
@@ -135,69 +172,121 @@ class _ChatPanelState extends State<ChatPanel> {
           ),
         ),
         const Divider(height: 1, color: T.border),
-        // ------ лента ------
+        // ------ лента (с зоной приёма перетащенных файлов) ------
         Expanded(
-          child: Container(
-            color: T.feedBg,
-            child: FutureBuilder<matrix.Timeline>(
-              future: _timelineFuture,
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(
-                    child: CircularProgressIndicator(color: T.accent),
-                  );
-                }
-                if (!snapshot.hasData || snapshot.hasError) {
-                  return const Center(
-                    child: Text(
-                      'Ошибка загрузки сообщений',
-                      style: TextStyle(color: Colors.redAccent),
-                    ),
-                  );
-                }
-                // Если чат был «удалён» — показываем только сообщения ПОЗЖЕ
-                // метки удаления (старая история скрыта у меня).
-                final clearedTs = widget.service.clearedTsFor(room.id);
-                final events = snapshot.data!.events
-                    .where(
-                      (e) =>
-                          e.relationshipEventId == null &&
-                          (e.type == 'm.room.message' ||
-                              e.type == 'm.room.encrypted') &&
-                          (clearedTs == null ||
-                              e.originServerTs.millisecondsSinceEpoch >
-                                  clearedTs),
-                    )
-                    .toList();
-                if (events.isEmpty) {
-                  return const Center(
-                    child: Text(
-                      'Нет сообщений. Напишите первое.',
-                      style: TextStyle(color: T.hint),
-                    ),
-                  );
-                }
-                return ListView.builder(
-                  reverse: true,
-                  padding: const EdgeInsets.symmetric(
-                    vertical: 14,
-                    horizontal: 40,
+          child: DropTarget(
+            onDragEntered: (_) => setState(() => _dragging = true),
+            onDragExited: (_) => setState(() => _dragging = false),
+            onDragDone: (detail) {
+              setState(() => _dragging = false);
+              _onDrop(detail);
+            },
+            child: Stack(
+              children: [
+                Container(
+                  color: T.feedBg,
+                  child: FutureBuilder<matrix.Timeline>(
+                    future: _timelineFuture,
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(
+                          child: CircularProgressIndicator(color: T.accent),
+                        );
+                      }
+                      if (!snapshot.hasData || snapshot.hasError) {
+                        return const Center(
+                          child: Text(
+                            'Ошибка загрузки сообщений',
+                            style: TextStyle(color: Colors.redAccent),
+                          ),
+                        );
+                      }
+                      // Если чат был «удалён» — показываем только сообщения ПОЗЖЕ
+                      // метки удаления (старая история скрыта у меня).
+                      final clearedTs = widget.service.clearedTsFor(room.id);
+                      final events = snapshot.data!.events
+                          .where(
+                            (e) =>
+                                e.relationshipEventId == null &&
+                                (e.type == 'm.room.message' ||
+                                    e.type == 'm.room.encrypted') &&
+                                (clearedTs == null ||
+                                    e.originServerTs.millisecondsSinceEpoch >
+                                        clearedTs),
+                          )
+                          .toList();
+                      if (events.isEmpty) {
+                        return const Center(
+                          child: Text(
+                            'Нет сообщений. Напишите первое.',
+                            style: TextStyle(color: T.hint),
+                          ),
+                        );
+                      }
+                      return ListView.builder(
+                        reverse: true,
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 14,
+                          horizontal: 40,
+                        ),
+                        itemCount: events.length,
+                        itemBuilder: (context, index) {
+                          final event = events[index];
+                          final isOwn =
+                              event.senderId == widget.room.client.userID;
+                          return _Bubble(
+                            event: event,
+                            room: room,
+                            isOwn: isOwn,
+                            showAuthor: isGroup && !isOwn,
+                            senderName: _senderName(event),
+                            onForward: () => _forward(event),
+                          );
+                        },
+                      );
+                    },
                   ),
-                  itemCount: events.length,
-                  itemBuilder: (context, index) {
-                    final event = events[index];
-                    final isOwn = event.senderId == widget.room.client.userID;
-                    return _Bubble(
-                      event: event,
-                      room: room,
-                      isOwn: isOwn,
-                      showAuthor: isGroup && !isOwn,
-                      senderName: _senderName(event),
-                      onForward: () => _forward(event),
-                    );
-                  },
-                );
-              },
+                ),
+
+                // Подсветка-подсказка, когда над чатом «висит» файл.
+                if (_dragging)
+                  Positioned.fill(
+                    child: Container(
+                      color: T.accent.withValues(alpha: 0.08),
+                      alignment: Alignment.center,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 18,
+                        ),
+                        decoration: BoxDecoration(
+                          color: T.panelAlt,
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(color: T.accent, width: 2),
+                        ),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: const [
+                            Icon(
+                              Icons.file_download_outlined,
+                              size: 40,
+                              color: T.accent,
+                            ),
+                            SizedBox(height: 8),
+                            Text(
+                              'Отпустите файл, чтобы отправить',
+                              style: TextStyle(
+                                color: T.accent,
+                                fontWeight: FontWeight.w600,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
           ),
         ),
