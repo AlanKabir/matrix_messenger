@@ -2,12 +2,15 @@
 // Сверху боковой панели: «Новая группа» и «Найти сотрудника или группу».
 // Снизу: строка профиля, открывающая экран «Настройки».
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
 import '../app_theme.dart';
 import '../services/matrix_service.dart';
 import '../widgets/common.dart';
+import '../widgets/member_picker.dart';
 import 'chat_panel.dart';
 import 'new_chat_search_sheet.dart';
 import 'settings_screen.dart';
@@ -41,10 +44,37 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         () => _searchQuery = _searchController.text.trim().toLowerCase(),
       );
     });
+    // Перерисовываем ВЕСЬ экран после каждой синхронизации: при холодном
+    // старте имена, участники групп и последние сообщения доезжают с
+    // сервера через несколько секунд — без этого интерфейс обновлялся
+    // только после клика мышью.
+    _syncSub = _client.onSync.stream.listen((_) {
+      if (mounted) setState(() {});
+    });
+    // Прогрев: после первой синхронизации дотягиваем участников видимых
+    // комнат, чтобы имена в списке сразу стали полными («Кани Каиржан…»
+    // вместо «K Kani» из кэша).
+    _warmUpRooms();
   }
+
+  Future<void> _warmUpRooms() async {
+    try {
+      // Дожидаемся первой синхронизации после запуска.
+      await _client.onSync.stream.first;
+      for (final room in _client.rooms.take(30)) {
+        try {
+          await room.requestParticipants();
+        } catch (_) {}
+      }
+      if (mounted) setState(() {});
+    } catch (_) {}
+  }
+
+  StreamSubscription<matrix.SyncUpdate>? _syncSub;
 
   @override
   void dispose() {
+    _syncSub?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -85,20 +115,107 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, nameCtrl.text.trim()),
-            child: const Text('Создать'),
+            child: const Text('Далее'),
           ),
         ],
       ),
     );
-    if (name == null || name.isEmpty) return;
-    final roomId = await _client.createRoom(
-      name: name,
-      preset: matrix.CreateRoomPreset.privateChat,
+    if (name == null || name.isEmpty || !mounted) return;
+
+    // Шаг 2 — выбор участников (себя в списке не показываем).
+    final members = await showMemberPicker(
+      context,
+      _client,
+      title: 'Кого добавить в «$name»',
+      confirmLabel: 'Создать группу',
+      exclude: {_client.userID ?? ''},
     );
-    final room = _client.getRoomById(roomId);
-    if (room != null) {
-      setState(() => _selectedRoom = room);
+    if (members == null || members.isEmpty || !mounted) return;
+
+    try {
+      final roomId = await _client.createRoom(
+        name: name,
+        preset: matrix.CreateRoomPreset.privateChat,
+        invite: members,
+      );
+      final room = _client.getRoomById(roomId);
+      if (room != null && mounted) {
+        setState(() => _selectedRoom = room);
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Группа создана, приглашено: ${members.length}'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось создать группу: $e')),
+        );
+      }
     }
+  }
+
+  // Контекстное меню чата в списке (правый клик / долгое нажатие).
+  Future<void> _roomMenu(matrix.Room room, Offset pos) async {
+    final isGroup = !room.isDirectChat;
+    final action = await showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(pos.dx, pos.dy, pos.dx, pos.dy),
+      items: [
+        if (isGroup)
+          const PopupMenuItem(value: 'add', child: Text('Добавить участников')),
+        const PopupMenuItem(
+          value: 'delete',
+          child: Text('Удалить чат', style: TextStyle(color: Colors.red)),
+        ),
+      ],
+    );
+    if (!mounted) return;
+    switch (action) {
+      case 'add':
+        await _addMembers(room);
+        break;
+      case 'delete':
+        await _deleteChat(room);
+        break;
+    }
+  }
+
+  // Добавление людей в уже существующую группу.
+  Future<void> _addMembers(matrix.Room room) async {
+    final already = room.getParticipants().map((u) => u.id).toSet();
+    final members = await showMemberPicker(
+      context,
+      _client,
+      title: 'Добавить в «${room.getLocalizedDisplayname()}»',
+      confirmLabel: 'Добавить',
+      exclude: already,
+    );
+    if (members == null || members.isEmpty || !mounted) return;
+
+    int ok = 0;
+    final List<String> failed = [];
+    for (final id in members) {
+      try {
+        await room.invite(id);
+        ok++;
+      } catch (_) {
+        failed.add(id);
+      }
+    }
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          failed.isEmpty
+              ? 'Приглашено: $ok'
+              : 'Приглашено: $ok, не удалось: ${failed.length}',
+        ),
+      ),
+    );
   }
 
   // «Удалить чат»: локальное скрытие для меня (clearChat). Комнату не покидаю,
@@ -282,7 +399,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             return Material(
               color: Colors.transparent,
               child: GestureDetector(
-                onSecondaryTap: () => _deleteChat(room),
+                onSecondaryTapDown: (d) => _roomMenu(room, d.globalPosition),
                 child: ListTile(
                   selected: isSelected,
                   selectedTileColor: T.selected,
@@ -326,7 +443,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                         )
                       : null,
                   onTap: () => setState(() => _selectedRoom = room),
-                  onLongPress: () => _deleteChat(room),
+                  onLongPress: () => _roomMenu(room, const Offset(200, 300)),
                 ),
               ),
             );

@@ -4,14 +4,36 @@ import 'package:local_notifier/local_notifier.dart';
 import 'package:matrix/matrix.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:window_manager/window_manager.dart';
+import 'package:windows_single_instance/windows_single_instance.dart';
 
 import 'app_theme.dart';
 import 'services/desktop_service.dart';
+import 'services/matrix_service.dart';
 import 'screens/login_screen.dart';
 
-void main() async {
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // ЗАЩИТА ОТ ВТОРОГО ЭКЗЕМПЛЯРА.
+  // Если приложение уже запущено (в том числе спрятано в трее) — новый
+  // процесс не стартует, а работающему приходит сигнал: показать окно.
+  await WindowsSingleInstance.ensureSingleInstance(
+    args,
+    'sgo_messenger_single_instance',
+    onSecondWindow: (args) async {
+      // Сюда попадает ПЕРВЫЙ (работающий) экземпляр, когда пользователь
+      // пытается запустить второй. Поднимаем окно из трея.
+      await windowManager.show();
+      await windowManager.focus();
+    },
+  );
+
   Logs().level = Level.verbose;
+
+  // Доверие к внутреннему CA — САМОЕ ПЕРВОЕ сетевое действие, до любых
+  // запросов и до создания клиента. Иначе часть операций (поиск людей,
+  // удаление чата, отправка файлов) может падать с CERTIFICATE_VERIFY_FAILED.
+  await MatrixService.installCaTrustGlobally();
 
   // Пишем все логи в файл рядом с данными приложения.
   final dir = await getApplicationSupportDirectory();
@@ -42,7 +64,7 @@ void main() async {
       await windowManager.focus();
     },
   );
-  await localNotifier.setup(appName: 'Мессенджер SGO');
+  await localNotifier.setup(appName: 'Abyroy Chat');
   await DesktopService.instance.init();
 
   runApp(
