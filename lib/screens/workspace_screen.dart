@@ -1,10 +1,18 @@
 // screens/workspace_screen.dart — двухпанельный workspace в стиле SGO.
-// Сверху боковой панели: «Новая группа» и «Найти сотрудника или группу».
-// Снизу: строка профиля, открывающая экран «Настройки».
+// Сверху боковой панели: «Новая группа». ЕДИНЫЙ поиск (как WhatsApp Desktop):
+// печатаешь в строке поиска — список чатов сменяется результатами:
+//   «Чаты и группы» — мои комнаты по названию;
+//   «Люди»          — каталог сервера; в плитке только ФИО (без @id).
+//
+// ЭКОНОМИЯ ЗАПРОСОВ К СЕРВЕРУ: запрос уходит ПОЛНЫМ введённым словом и
+// только после паузы 500 мс (debounce) — не на каждую букву. Если сервер
+// отдал полный список (не обрезал по лимиту), дописывание букв фильтруется
+// ЛОКАЛЬНО без новых запросов.
 
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
 import '../app_theme.dart';
@@ -12,7 +20,6 @@ import '../services/matrix_service.dart';
 import '../widgets/common.dart';
 import '../widgets/member_picker.dart';
 import 'chat_panel.dart';
-import 'new_chat_search_sheet.dart';
 import 'settings_screen.dart';
 import '../services/desktop_service.dart';
 
@@ -32,6 +39,19 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   final TextEditingController _searchController = TextEditingController();
   String _searchQuery = '';
 
+  // --- поиск по каталогу сотрудников (раздел «Люди») ---
+  Timer? _dirDebounce;
+  bool _dirLoading = false;
+  List<matrix.Profile> _dirResults = [];
+  String? _dirError;
+
+  // Кэш каталога: по какому префиксу загружен и полон ли ответ сервера.
+  // Пока новый запрос начинается с этого префикса и кэш полный —
+  // фильтруем локально и НЕ ходим на сервер.
+  String? _dirCacheQuery;
+  List<matrix.Profile> _dirCache = [];
+  bool _dirCacheComplete = false;
+
   @override
   void initState() {
     super.initState();
@@ -39,11 +59,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _ownProfile = _client.fetchOwnProfile();
     // Подключаем уведомления/трей к текущему клиенту.
     DesktopService.instance.attachClient(_client);
-    _searchController.addListener(() {
-      setState(
-        () => _searchQuery = _searchController.text.trim().toLowerCase(),
-      );
-    });
+    _searchController.addListener(_onSearchChanged);
     // Перерисовываем ВЕСЬ экран после каждой синхронизации: при холодном
     // старте имена, участники групп и последние сообщения доезжают с
     // сервера через несколько секунд — без этого интерфейс обновлялся
@@ -75,26 +91,131 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   @override
   void dispose() {
     _syncSub?.cancel();
+    _dirDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
   }
 
-  void _openNewChatSearch() {
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: Colors.white,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (context) => NewChatSearchSheet(
-        service: widget.matrixService,
-        onChatOpened: (room) {
-          Navigator.pop(context);
-          setState(() => _selectedRoom = room);
-        },
-      ),
-    );
+  // Локальная фильтрация кэша каталога (по ФИО и по логину).
+  List<matrix.Profile> _filterCache(String q) => _dirCache
+      .where(
+        (p) =>
+            (p.displayName ?? '').toLowerCase().contains(q) ||
+            p.userId.toLowerCase().contains(q),
+      )
+      .toList();
+
+  // Изменился текст в строке поиска.
+  void _onSearchChanged() {
+    final q = _searchController.text.trim().toLowerCase();
+    setState(() => _searchQuery = q);
+    _dirDebounce?.cancel();
+
+    // Пусто или 1 буква — каталог не спрашиваем (слишком общий запрос).
+    if (q.length < 2) {
+      setState(() {
+        _dirResults = [];
+        _dirLoading = false;
+        _dirError = null;
+      });
+      return;
+    }
+
+    // Запрос продолжает уже загруженное слово, и сервер тогда отдал ВСЁ
+    // (не обрезал по лимиту) — фильтруем локально, БЕЗ запроса к серверу.
+    if (_dirCacheQuery != null &&
+        q.startsWith(_dirCacheQuery!) &&
+        _dirCacheComplete) {
+      setState(() {
+        _dirResults = _filterCache(q);
+        _dirLoading = false;
+        _dirError = null;
+      });
+      return;
+    }
+
+    // Один запрос ПОЛНЫМ введённым словом после паузы 500 мс.
+    // Пока человек печатает без пауз — запросы не уходят вовсе.
+    setState(() => _dirLoading = true);
+    _dirDebounce = Timer(const Duration(milliseconds: 500), () {
+      _fetchDirectory(q);
+    });
+  }
+
+  // Один запрос к каталогу с тем словом, которое ввёл пользователь.
+  Future<void> _fetchDirectory(String q) async {
+    try {
+      final response = await _client.searchUserDirectory(q, limit: 50);
+      if (!mounted) return;
+      _dirCacheQuery = q;
+      _dirCache = response.results;
+      // limited == true значит сервер обрезал список — кэш неполный,
+      // при дописывании букв придётся спросить сервер ещё раз.
+      _dirCacheComplete = response.limited != true;
+
+      final current = _searchController.text.trim().toLowerCase();
+      if (current.length < 2) {
+        setState(() {
+          _dirResults = [];
+          _dirLoading = false;
+          _dirError = null;
+        });
+      } else if (current == q) {
+        // Показываем ответ сервера как есть.
+        setState(() {
+          _dirResults = response.results;
+          _dirLoading = false;
+          _dirError = null;
+        });
+      } else if (current.startsWith(q) && _dirCacheComplete) {
+        // Успели дописать буквы, но кэш полный — фильтруем локально.
+        setState(() {
+          _dirResults = _filterCache(current);
+          _dirLoading = false;
+          _dirError = null;
+        });
+      } else {
+        // Запрос изменился сильнее — спрашиваем сервер по актуальному слову.
+        _fetchDirectory(current);
+      }
+    } catch (e) {
+      // Например, rate-limit сервера. Показываем ошибку честно + кэш, если есть.
+      if (mounted) {
+        setState(() {
+          _dirResults = _filterCache(
+            _searchController.text.trim().toLowerCase(),
+          );
+          _dirLoading = false;
+          _dirError = 'Поиск временно недоступен, попробуйте ещё раз';
+        });
+      }
+    }
+  }
+
+  void _clearSearch() {
+    _searchController.clear();
+  }
+
+  // Клик по человеку из раздела «Люди»: создать (или открыть) личный чат.
+  Future<void> _openDirectChat(String userId) async {
+    try {
+      final room = await widget.matrixService.startDirectChat(userId);
+      if (!mounted) return;
+      if (room != null) {
+        _clearSearch();
+        setState(() => _selectedRoom = room);
+      } else {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Не удалось открыть чат')));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Не удалось начать чат: $e')));
+      }
+    }
   }
 
   Future<void> _createGroup() async {
@@ -284,7 +405,11 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 children: [
                   _header(),
                   _searchBar(),
-                  Expanded(child: _roomList()),
+                  Expanded(
+                    child: _searchQuery.isEmpty
+                        ? _roomList()
+                        : _searchResults(),
+                  ),
                   _profileTile(),
                 ],
               ),
@@ -326,130 +451,238 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           icon: const Icon(Icons.group_add, color: T.accent, size: 22),
           onPressed: _createGroup,
         ),
-        IconButton(
-          tooltip: 'Найти сотрудника или группу',
-          icon: const Icon(Icons.person_add_alt, color: T.accent, size: 22),
-          onPressed: _openNewChatSearch,
-        ),
       ],
     ),
   );
 
   Widget _searchBar() => Padding(
     padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-    child: TextField(
-      controller: _searchController,
-      decoration: InputDecoration(
-        hintText: 'Поиск',
-        hintStyle: const TextStyle(color: T.hint, fontSize: 14),
-        prefixIcon: const Icon(Icons.search, size: 20, color: T.hint),
-        suffixIcon: _searchQuery.isNotEmpty
-            ? IconButton(
-                icon: const Icon(Icons.close, size: 16),
-                onPressed: () => _searchController.clear(),
-              )
-            : null,
-        isDense: true,
-        filled: true,
-        fillColor: const Color(0xFFE6EBF3),
-        border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(10),
-          borderSide: BorderSide.none,
+    child: CallbackShortcuts(
+      bindings: {
+        // Esc — очистить поиск и вернуться к списку чатов.
+        const SingleActivator(LogicalKeyboardKey.escape): _clearSearch,
+      },
+      child: TextField(
+        controller: _searchController,
+        decoration: InputDecoration(
+          hintText: 'Поиск сотрудника или чата',
+          hintStyle: const TextStyle(color: T.hint, fontSize: 14),
+          prefixIcon: const Icon(Icons.search, size: 20, color: T.hint),
+          suffixIcon: _searchQuery.isNotEmpty
+              ? IconButton(
+                  icon: const Icon(Icons.close, size: 16),
+                  onPressed: _clearSearch,
+                )
+              : null,
+          isDense: true,
+          filled: true,
+          fillColor: const Color(0xFFE6EBF3),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: BorderSide.none,
+          ),
         ),
       ),
     ),
   );
 
+  // ---------------------------------------------------------------------------
+  // Обычный список чатов (поиск пустой).
   Widget _roomList() {
     return StreamBuilder(
       stream: _client.onSync.stream,
       builder: (context, snapshot) {
-        var rooms = _client.rooms
-            .where((r) => r.membership == matrix.Membership.join)
-            .where((r) => widget.matrixService.isRoomVisible(r))
-            .toList();
-        if (_searchQuery.isNotEmpty) {
-          rooms = rooms
-              .where(
-                (r) => r.getLocalizedDisplayname().toLowerCase().contains(
-                  _searchQuery,
-                ),
-              )
-              .toList();
-        }
+        final rooms = _visibleRooms();
         if (rooms.isEmpty) {
-          return Center(
+          return const Center(
             child: Text(
-              _searchQuery.isNotEmpty
-                  ? 'Ничего не найдено'
-                  : 'Нет активных чатов',
-              style: const TextStyle(color: T.textSec, fontSize: 13),
+              'Нет активных чатов',
+              style: TextStyle(color: T.textSec, fontSize: 13),
             ),
           );
         }
         return ListView.builder(
           itemCount: rooms.length,
-          itemBuilder: (context, index) {
-            final room = rooms[index];
-            final unread = room.notificationCount;
-            final isSelected = _selectedRoom?.id == room.id;
-            final title = room.getLocalizedDisplayname();
-            final lastMsg = room.lastEvent?.body ?? 'Нет сообщений';
-
-            return Material(
-              color: Colors.transparent,
-              child: GestureDetector(
-                onSecondaryTapDown: (d) => _roomMenu(room, d.globalPosition),
-                child: ListTile(
-                  selected: isSelected,
-                  selectedTileColor: T.selected,
-                  leading: InitialsAvatar(
-                    name: title,
-                    group: !room.isDirectChat,
-                  ),
-                  title: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w500,
-                      color: T.text,
-                    ),
-                  ),
-                  subtitle: Text(
-                    lastMsg,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(fontSize: 12.5, color: T.textSec),
-                  ),
-                  trailing: unread > 0
-                      ? Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 7,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: T.unreadBadge,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            '$unread',
-                            style: const TextStyle(
-                              color: T.unreadBadgeText,
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        )
-                      : null,
-                  onTap: () => setState(() => _selectedRoom = room),
-                  onLongPress: () => _roomMenu(room, const Offset(200, 300)),
-                ),
-              ),
-            );
-          },
+          itemBuilder: (context, index) => _roomTile(rooms[index]),
         );
       },
+    );
+  }
+
+  // Мои видимые комнаты (joined + не скрытые «удалением чата»).
+  List<matrix.Room> _visibleRooms() => _client.rooms
+      .where((r) => r.membership == matrix.Membership.join)
+      .where((r) => widget.matrixService.isRoomVisible(r))
+      .toList();
+
+  // ---------------------------------------------------------------------------
+  // Результаты поиска (как в WhatsApp Desktop): «Чаты и группы» + «Люди».
+  Widget _searchResults() {
+    // 1) Мои чаты и группы, подходящие по названию.
+    final rooms = _visibleRooms()
+        .where(
+          (r) =>
+              r.getLocalizedDisplayname().toLowerCase().contains(_searchQuery),
+        )
+        .toList();
+
+    // ID собеседников, с которыми уже есть личный чат, — чтобы не дублировать
+    // их в разделе «Люди».
+    final haveDirect = <String>{};
+    for (final r in _visibleRooms()) {
+      if (r.isDirectChat && r.directChatMatrixID != null) {
+        haveDirect.add(r.directChatMatrixID!);
+      }
+    }
+
+    // 2) Люди из каталога: без себя и без тех, кто уже в «Чатах».
+    final me = _client.userID;
+    final people = _dirResults
+        .where((p) => p.userId != me && !haveDirect.contains(p.userId))
+        .toList();
+
+    if (rooms.isEmpty && people.isEmpty && !_dirLoading) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Text(
+            _dirError ??
+                (_searchQuery.length < 2
+                    ? 'Введите минимум 2 буквы'
+                    : 'Ничего не найдено'),
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: _dirError != null ? Colors.redAccent : T.textSec,
+              fontSize: 13,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return ListView(
+      children: [
+        if (rooms.isNotEmpty) ...[
+          _sectionHeader('Чаты и группы'),
+          ...rooms.map(_roomTile),
+        ],
+        if (people.isNotEmpty || _dirLoading) _sectionHeader('Люди'),
+        if (_dirError != null && !_dirLoading)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+            child: Text(
+              _dirError!,
+              style: const TextStyle(color: Colors.redAccent, fontSize: 12),
+            ),
+          ),
+        if (_dirLoading)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 16),
+            child: Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: T.accent,
+                ),
+              ),
+            ),
+          )
+        else
+          ...people.map(_personTile),
+      ],
+    );
+  }
+
+  Widget _sectionHeader(String text) => Padding(
+    padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+    child: Text(
+      text,
+      style: const TextStyle(
+        fontSize: 12,
+        fontWeight: FontWeight.w700,
+        color: T.steel,
+        letterSpacing: 0.3,
+      ),
+    ),
+  );
+
+  // Плитка человека из каталога — только ФИО, без Matrix ID.
+  Widget _personTile(matrix.Profile user) {
+    final title = user.displayName?.isNotEmpty == true
+        ? user.displayName!
+        : user.userId.split(':').first.replaceFirst('@', '');
+    return Material(
+      color: Colors.transparent,
+      child: ListTile(
+        leading: InitialsAvatar(name: title, radius: 20),
+        title: Text(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w500, color: T.text),
+        ),
+        onTap: () => _openDirectChat(user.userId),
+      ),
+    );
+  }
+
+  // Плитка комнаты (используется и в списке чатов, и в результатах поиска).
+  Widget _roomTile(matrix.Room room) {
+    final unread = room.notificationCount;
+    final isSelected = _selectedRoom?.id == room.id;
+    final title = room.getLocalizedDisplayname();
+    final lastMsg = room.lastEvent?.body ?? 'Нет сообщений';
+
+    return Material(
+      color: Colors.transparent,
+      child: GestureDetector(
+        onSecondaryTapDown: (d) => _roomMenu(room, d.globalPosition),
+        child: ListTile(
+          selected: isSelected,
+          selectedTileColor: T.selected,
+          leading: InitialsAvatar(name: title, group: !room.isDirectChat),
+          title: Text(
+            title,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w500, color: T.text),
+          ),
+          subtitle: Text(
+            lastMsg,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 12.5, color: T.textSec),
+          ),
+          trailing: unread > 0
+              ? Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: T.unreadBadge,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '$unread',
+                    style: const TextStyle(
+                      color: T.unreadBadgeText,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                )
+              : null,
+          onTap: () {
+            // Из результатов поиска: открыть чат и вернуть обычный список.
+            if (_searchQuery.isNotEmpty) _clearSearch();
+            setState(() => _selectedRoom = room);
+          },
+          onLongPress: () => _roomMenu(room, const Offset(200, 300)),
+        ),
+      ),
     );
   }
 
