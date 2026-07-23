@@ -145,7 +145,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   // Один запрос к каталогу с тем словом, которое ввёл пользователь.
   Future<void> _fetchDirectory(String q) async {
     try {
-      final response = await _client.searchUserDirectory(q, limit: 50);
+      final response = await _client.searchUserDirectory(q, limit: 100);
       if (!mounted) return;
       _dirCacheQuery = q;
       _dirCache = response.results;
@@ -540,6 +540,30 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     final people = _dirResults
         .where((p) => p.userId != me && !haveDirect.contains(p.userId))
         .toList();
+
+    // Сортировка: сервер матчит ЛЮБОЕ слово имени («Ка» находит и Калиева,
+    // и Кайрата Канатовича по имени/отчеству). Показываем в порядке:
+    //   0 — фамилия начинается с запроса (первое слово: «Фамилия Имя Отчество»)
+    //   1 — имя или отчество начинается с запроса
+    //   2 — совпадение где-то внутри слова
+    // Внутри групп — по алфавиту.
+    int rankOf(matrix.Profile p) {
+      final name = (p.displayName ?? p.userId).toLowerCase();
+      if (name.startsWith(_searchQuery)) return 0;
+      final words = name.split(RegExp(r'\s+'));
+      for (var i = 1; i < words.length; i++) {
+        if (words[i].startsWith(_searchQuery)) return 1;
+      }
+      return 2;
+    }
+
+    people.sort((a, b) {
+      final r = rankOf(a).compareTo(rankOf(b));
+      if (r != 0) return r;
+      return (a.displayName ?? a.userId).toLowerCase().compareTo(
+        (b.displayName ?? b.userId).toLowerCase(),
+      );
+    });
 
     if (rooms.isEmpty && people.isEmpty && !_dirLoading) {
       return Center(

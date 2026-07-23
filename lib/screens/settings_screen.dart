@@ -1,5 +1,6 @@
 // screens/settings_screen.dart — экран «Настройки».
-// Внутри: карточка профиля, «Устройства и сеансы», «Выйти из аккаунта».
+// Внутри: карточка профиля, «Автозапуск при входе в Windows»,
+// «Устройства и сеансы», «Выйти из аккаунта».
 //
 // ВАЖНО: пункты «Устройства и сеансы» и «Выйти из аккаунта» сейчас СКРЫТЫ.
 // Управляется одной строкой ниже — showAccountControls.
@@ -11,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
 import '../app_theme.dart';
+import '../services/autostart_service.dart';
 import '../services/matrix_service.dart';
 import '../widgets/common.dart';
 import 'login_screen.dart';
@@ -22,14 +24,27 @@ import 'sessions_screen.dart';
 bool showAccountControls = false;
 // ─────────────────────────────────────────────────────────────
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   final MatrixService service;
   const SettingsScreen({super.key, required this.service});
 
-  matrix.Client get _client => service.client!;
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  matrix.Client get _client => widget.service.client!;
+
+  // Текущее состояние автозапуска (прочитано из реестра при старте).
+  bool _autostart = AutostartService.instance.enabled;
+
+  Future<void> _toggleAutostart(bool value) async {
+    final result = await AutostartService.instance.setEnabled(value);
+    if (mounted) setState(() => _autostart = result);
+  }
 
   Future<void> _logout(BuildContext context) async {
-    await service.logout();
+    await widget.service.logout();
     if (context.mounted) {
       Navigator.of(context).pushAndRemoveUntil(
         MaterialPageRoute(builder: (_) => const LoginScreen()),
@@ -134,6 +149,25 @@ class SettingsScreen extends StatelessWidget {
               },
             ),
           ),
+
+          // --- автозапуск при входе в Windows ---
+          const SizedBox(height: 22),
+          _group([
+            SwitchListTile(
+              value: _autostart,
+              onChanged: _toggleAutostart,
+              activeThumbColor: T.accent,
+              secondary: const Icon(Icons.power_settings_new, color: T.accent),
+              title: const Text(
+                'Запускать при входе в Windows',
+                style: TextStyle(color: T.text, fontWeight: FontWeight.w500),
+              ),
+              subtitle: const Text(
+                'Мессенджер откроется автоматически после включения компьютера',
+                style: TextStyle(fontSize: 12.5, color: T.textSec),
+              ),
+            ),
+          ]),
 
           // --- устройства и сеансы (скрыто через showAccountControls) ---
           if (showAccountControls) ...[

@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 import 'package:windows_single_instance/windows_single_instance.dart';
 
 import 'app_theme.dart';
+import 'services/autostart_service.dart';
 import 'services/desktop_service.dart';
 import 'services/matrix_service.dart';
 import 'screens/login_screen.dart';
@@ -66,6 +67,10 @@ void main(List<String> args) async {
   );
   await localNotifier.setup(appName: 'Abyroy Chat');
   await DesktopService.instance.init();
+
+  // Автозапуск при входе в Windows: читаем текущее состояние из реестра,
+  // чтобы галочка в настройках показывала правду.
+  await AutostartService.instance.init();
 
   runApp(
     MaterialApp(

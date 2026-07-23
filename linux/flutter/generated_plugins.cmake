@@ -4,8 +4,10 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   desktop_drop
+  irondash_engine_context
   local_notifier
   screen_retriever_linux
+  super_native_extensions
   tray_manager
   url_launcher_linux
   window_manager
