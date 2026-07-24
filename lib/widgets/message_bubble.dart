@@ -219,6 +219,16 @@ class MessageBubble extends StatelessWidget {
               bottomLeft: Radius.circular(isOwn ? 16 : 5),
               bottomRight: Radius.circular(isOwn ? 5 : 16),
             ),
+            // Белые входящие отделяем от фона рамкой; лёгкая тень
+            // приподнимает все пузыри над лентой.
+            border: isOwn ? null : Border.all(color: T.border),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x14000000),
+                blurRadius: 3,
+                offset: Offset(0, 1),
+              ),
+            ],
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,

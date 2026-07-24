@@ -183,81 +183,84 @@ class _ChatPanelState extends State<ChatPanel> {
             },
             child: Stack(
               children: [
-                Container(
-                  color: T.feedBg,
-                  child: FutureBuilder<matrix.Timeline>(
-                    future: _timelineFuture,
-                    builder: (context, snapshot) {
-                      if (snapshot.connectionState == ConnectionState.waiting) {
-                        return const Center(
-                          child: CircularProgressIndicator(color: T.accent),
-                        );
-                      }
-                      if (!snapshot.hasData || snapshot.hasError) {
-                        return const Center(
-                          child: Text(
-                            'Ошибка загрузки сообщений',
-                            style: TextStyle(color: Colors.redAccent),
-                          ),
-                        );
-                      }
-                      final timeline = snapshot.data!;
-                      // Если чат был «удалён» — показываем только сообщения ПОЗЖЕ
-                      // метки удаления (старая история скрыта у меня).
-                      final clearedTs = widget.service.clearedTsFor(room.id);
-                      final events = timeline.events
-                          .where(
-                            (e) =>
-                                // Обычные сообщения (без связи) и ОТВЕТЫ
-                                // показываем; правки/реакции — нет
-                                // (правки подставляются в исходный пузырь).
-                                (e.relationshipEventId == null ||
-                                    e.relationshipType == 'm.in_reply_to') &&
-                                // удалённые «у всех» не показываем вовсе
-                                !e.redacted &&
-                                (e.type == 'm.room.message' ||
-                                    e.type == 'm.room.encrypted') &&
-                                (clearedTs == null ||
-                                    e.originServerTs.millisecondsSinceEpoch >
-                                        clearedTs),
-                          )
-                          .toList();
-                      if (events.isEmpty) {
-                        return const Center(
-                          child: Text(
-                            'Нет сообщений. Напишите первое.',
-                            style: TextStyle(color: T.hint),
-                          ),
-                        );
-                      }
-                      return ListView.builder(
-                        reverse: true,
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 14,
-                          horizontal: 40,
-                        ),
-                        itemCount: events.length,
-                        itemBuilder: (context, index) {
-                          final event = events[index];
-                          final isOwn =
-                              event.senderId == widget.room.client.userID;
-                          return MessageBubble(
-                            event: event,
-                            room: room,
-                            timeline: timeline,
-                            isOwn: isOwn,
-                            showAuthor: isGroup && !isOwn,
-                            senderName: _senderName(event),
-                            onForward: () => _forward(event),
-                            onReply: () =>
-                                _composerKey.currentState?.startReply(event),
-                            onEdit: (currentText) => _composerKey.currentState
-                                ?.startEdit(event, currentText),
-                          );
-                        },
+                // Фон ленты.
+                Positioned.fill(child: Container(color: T.feedBg)),
+                // Водяной знак-герб: по центру, крупный, однотонный
+                // (обесцвечен) и полупрозрачный — не мешает читать текст.
+                const Positioned.fill(child: _ChatWatermark()),
+                // Лента сообщений (фон прозрачный — герб просвечивает).
+                FutureBuilder<matrix.Timeline>(
+                  future: _timelineFuture,
+                  builder: (context, snapshot) {
+                    if (snapshot.connectionState == ConnectionState.waiting) {
+                      return const Center(
+                        child: CircularProgressIndicator(color: T.accent),
                       );
-                    },
-                  ),
+                    }
+                    if (!snapshot.hasData || snapshot.hasError) {
+                      return const Center(
+                        child: Text(
+                          'Ошибка загрузки сообщений',
+                          style: TextStyle(color: Colors.redAccent),
+                        ),
+                      );
+                    }
+                    final timeline = snapshot.data!;
+                    // Если чат был «удалён» — показываем только сообщения ПОЗЖЕ
+                    // метки удаления (старая история скрыта у меня).
+                    final clearedTs = widget.service.clearedTsFor(room.id);
+                    final events = timeline.events
+                        .where(
+                          (e) =>
+                              // Обычные сообщения (без связи) и ОТВЕТЫ
+                              // показываем; правки/реакции — нет
+                              // (правки подставляются в исходный пузырь).
+                              (e.relationshipEventId == null ||
+                                  e.relationshipType == 'm.in_reply_to') &&
+                              // удалённые «у всех» не показываем вовсе
+                              !e.redacted &&
+                              (e.type == 'm.room.message' ||
+                                  e.type == 'm.room.encrypted') &&
+                              (clearedTs == null ||
+                                  e.originServerTs.millisecondsSinceEpoch >
+                                      clearedTs),
+                        )
+                        .toList();
+                    if (events.isEmpty) {
+                      return const Center(
+                        child: Text(
+                          'Нет сообщений. Напишите первое.',
+                          style: TextStyle(color: T.hint),
+                        ),
+                      );
+                    }
+                    return ListView.builder(
+                      reverse: true,
+                      padding: const EdgeInsets.symmetric(
+                        vertical: 14,
+                        horizontal: 40,
+                      ),
+                      itemCount: events.length,
+                      itemBuilder: (context, index) {
+                        final event = events[index];
+                        final isOwn =
+                            event.senderId == widget.room.client.userID;
+                        return MessageBubble(
+                          event: event,
+                          room: room,
+                          timeline: timeline,
+                          isOwn: isOwn,
+                          showAuthor: isGroup && !isOwn,
+                          senderName: _senderName(event),
+                          onForward: () => _forward(event),
+                          onReply: () =>
+                              _composerKey.currentState?.startReply(event),
+                          onEdit: (currentText) => _composerKey.currentState
+                              ?.startEdit(event, currentText),
+                        );
+                      },
+                    );
+                  },
                 ),
 
                 // Подсветка-подсказка, когда над чатом «висит» файл.
@@ -305,6 +308,52 @@ class _ChatPanelState extends State<ChatPanel> {
         // ------ композер (плашки ответа/редактирования внутри) ------
         MessageComposer(key: _composerKey, room: room),
       ],
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Водяной знак-герб на фоне ленты чата.
+// НАСТРОЙКА ВНЕШНЕГО ВИДА — два числа ниже:
+//   _opacity — насколько заметен (0.05 еле видно … 0.15 отчётливо)
+//   _sizeFactor — размер от высоты окна чата (0.5 = половина, 0.7 = крупнее)
+class _ChatWatermark extends StatelessWidget {
+  const _ChatWatermark();
+
+  static const double _opacity = 0.12;
+  static const double _sizeFactor = 0.6;
+
+  // Матрица «обесцвечивания»: любой цвет герба → серый полутон,
+  // прозрачность краёв (alpha) сохраняется.
+  static const List<double> _greyMatrix = <double>[
+    0.2126, 0.7152, 0.0722, 0, 0, // R
+    0.2126, 0.7152, 0.0722, 0, 0, // G
+    0.2126, 0.7152, 0.0722, 0, 0, // B
+    0, 0, 0, 1, 0, // A
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Center(
+        child: FractionallySizedBox(
+          widthFactor: _sizeFactor,
+          heightFactor: _sizeFactor,
+          child: Opacity(
+            opacity: _opacity,
+            child: ColorFiltered(
+              colorFilter: const ColorFilter.matrix(_greyMatrix),
+              child: Image.asset(
+                'assets/emblem.png',
+                fit: BoxFit.contain,
+                // Если asset забыли подключить — просто ничего не рисуем,
+                // чат работает как раньше.
+                errorBuilder: (_, _, _) => const SizedBox.shrink(),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

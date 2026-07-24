@@ -28,7 +28,7 @@ class AutostartService {
     if (!Platform.isWindows) return;
     try {
       launchAtStartup.setup(
-        appName: 'Мессенджер SGO',
+        appName: 'ABYROY Chat',
         appPath: Platform.resolvedExecutable,
       );
       _enabled = await launchAtStartup.isEnabled();

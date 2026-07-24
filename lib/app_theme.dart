@@ -1,16 +1,20 @@
 // app_theme.dart — вся палитра приложения в одном месте.
 // Тема SGO: светлая, фирменный синий #17376B + золотой акцент #C79A2E.
-// (Прежние значения ABYROY/WhatsApp оставлены в комментариях справа.)
+// Обновление: зоны интерфейса теперь визуально РАЗДЕЛЕНЫ —
+//   боковая панель  — тонированный сине-серый (как Telegram Desktop),
+//   лента чата      — холодный голубоватый, другого оттенка,
+//   шапка/композер  — свой полутон с разделителями,
+//   входящие пузыри — белые (рамка и тень задаются в message_bubble).
 
 import 'package:flutter/material.dart';
 
 class T {
   // --- поверхности ---
   static const bg = Colors.white; // фон приложения
-  static const panel = Color(0xFFF2F5F9); // боковая панель (серебристый)
-  static const panelAlt = Colors.white; // шапки чата/композер
+  static const panel = Color(0xFFE3EAF4); // боковая панель (сине-серый тон)
+  static const panelAlt = Color(0xFFF7F9FC); // шапки чата/композер (полутон)
   static const inputFill = Colors.white; // поля ввода
-  static const border = Color(0xFFE2E7EE); // тонкие разделители
+  static const border = Color(0xFFD5DEE9); // разделители (чуть заметнее)
 
   // --- акценты ---
   static const accent = Color(0xFF17376B); // основной синий (герб)
@@ -19,12 +23,12 @@ class T {
   static const steel = Color(
     0xFF3B6EA5,
   ); // сталь-синий (статусы, часть аватаров)
-  static const selected = Color(0xFFEAF0F8); // выделенный чат в списке
+  static const selected = Color(0xFFCFDDF0); // выделенный чат в списке
 
   // --- пузыри переписки ---
   static const ownBubble = Color(0xFF17376B); // свои сообщения (синие)
-  static const inBubble = Color(0xFFECEFF3); // чужие (светло-серые)
-  static const feedBg = Color(0xFFF6F8FC); // фон ленты сообщений
+  static const inBubble = Colors.white; // чужие (белые, с рамкой и тенью)
+  static const feedBg = Color(0xFFEDF2F9); // фон ленты (холодный голубой)
 
   // --- текст ---
   static const text = Color(0xFF1D2530); // основной

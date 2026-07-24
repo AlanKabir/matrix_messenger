@@ -46,7 +46,12 @@ void main(List<String> args) async {
   final origDebugPrint = debugPrint;
   debugPrint = (String? message, {int? wrapWidth}) {
     if (message != null) {
-      logFile.writeAsStringSync('$message\n', mode: FileMode.append);
+      // Метка времени на каждой строке — иначе по логу невозможно
+      // привязать событие к моменту сбоя.
+      final now = DateTime.now();
+      String two(int v) => v.toString().padLeft(2, '0');
+      final ts = '${two(now.hour)}:${two(now.minute)}:${two(now.second)}';
+      logFile.writeAsStringSync('[$ts] $message\n', mode: FileMode.append);
     }
     origDebugPrint(message, wrapWidth: wrapWidth);
   };
@@ -58,14 +63,14 @@ void main(List<String> args) async {
       size: Size(1100, 720),
       minimumSize: Size(800, 560),
       center: true,
-      title: 'Мессенджер SGO',
+      title: 'ABYROY Chat',
     ),
     () async {
       await windowManager.show();
       await windowManager.focus();
     },
   );
-  await localNotifier.setup(appName: 'Abyroy Chat');
+  await localNotifier.setup(appName: 'ABYROY Chat');
   await DesktopService.instance.init();
 
   // Автозапуск при входе в Windows: читаем текущее состояние из реестра,
@@ -75,7 +80,7 @@ void main(List<String> args) async {
   runApp(
     MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Мессенджер SGO',
+      title: 'ABYROY Chat',
       theme: T.theme(),
       home: const LoginScreen(),
     ),

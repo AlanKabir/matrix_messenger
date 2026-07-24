@@ -10,6 +10,7 @@
 // ЛОКАЛЬНО без новых запросов.
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -52,6 +53,14 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   List<matrix.Profile> _dirCache = [];
   bool _dirCacheComplete = false;
 
+  // --- индикатор соединения ---
+  // true, пока синхронизация с сервером проходит успешно. При ошибке
+  // показываем плашку «нет связи» и пишем в лог DNS-снимок (какой IP
+  // машина видит для matrix.sgo.kz в момент сбоя).
+  bool _online = true;
+  StreamSubscription<matrix.SyncStatusUpdate>? _statusSub;
+  DateTime? _lastDnsLog;
+
   @override
   void initState() {
     super.initState();
@@ -67,6 +76,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     _syncSub = _client.onSync.stream.listen((_) {
       if (mounted) setState(() {});
     });
+    // Следим за состоянием синхронизации: ошибка → плашка «нет связи»
+    // + DNS-снимок в лог (главная улика при проблемах с DNS-кэшем).
+    _statusSub = _client.onSyncStatus.stream.listen((update) {
+      final ok = update.status != matrix.SyncStatus.error;
+      if (ok != _online && mounted) setState(() => _online = ok);
+      if (!ok) _logDnsSnapshot(update.error?.toString());
+    });
     // Прогрев: после первой синхронизации дотягиваем участников видимых
     // комнат, чтобы имена в списке сразу стали полными («Кани Каиржан…»
     // вместо «K Kani» из кэша).
@@ -75,14 +91,27 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
 
   Future<void> _warmUpRooms() async {
     try {
-      // Дожидаемся первой синхронизации после запуска.
-      await _client.onSync.stream.first;
-      for (final room in _client.rooms.take(30)) {
+      // При восстановленной сессии комнаты уже в локальной базе — ждать
+      // синхронизацию не нужно. Ждём её только если список ещё пуст
+      // (самый первый вход, база пустая).
+      if (_client.rooms.isEmpty) {
+        await _client.onSync.stream.first;
+      }
+      final rooms = _client.rooms.take(30).toList();
+      for (var i = 0; i < rooms.length; i++) {
+        final room = rooms[i];
         try {
+          // Дочитать состояние комнаты (участников, имена) из базы...
+          await room.postLoad();
+          // ...и дотянуть недостающих участников с сервера.
           await room.requestParticipants();
         } catch (_) {}
+        // Перерисовываем каждые 3 комнаты, а не одним махом в конце —
+        // полные ФИО появляются сразу, без клика по интерфейсу.
+        if (mounted && (i % 3 == 2 || i == rooms.length - 1)) {
+          setState(() {});
+        }
       }
-      if (mounted) setState(() {});
     } catch (_) {}
   }
 
@@ -91,9 +120,30 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   @override
   void dispose() {
     _syncSub?.cancel();
+    _statusSub?.cancel();
     _dirDebounce?.cancel();
     _searchController.dispose();
     super.dispose();
+  }
+
+  // В момент сбоя синхронизации пишем в лог, какой IP машина СЕЙЧАС видит
+  // для matrix.sgo.kz. Если там окажется старый сервер — это улика, что
+  // проблема в DNS-кэше/DNS-сервере, а не в приложении.
+  // Не чаще раза в минуту, чтобы не засорять лог при длительном сбое.
+  Future<void> _logDnsSnapshot(String? error) async {
+    final now = DateTime.now();
+    if (_lastDnsLog != null &&
+        now.difference(_lastDnsLog!) < const Duration(minutes: 1)) {
+      return;
+    }
+    _lastDnsLog = now;
+    try {
+      final ips = await InternetAddress.lookup('matrix.sgo.kz');
+      final list = ips.map((a) => a.address).join(', ');
+      debugPrint('SYNC ERROR: $error | DNS matrix.sgo.kz -> $list');
+    } catch (e) {
+      debugPrint('SYNC ERROR: $error | DNS lookup failed: $e');
+    }
   }
 
   // Локальная фильтрация кэша каталога (по ФИО и по логину).
@@ -180,6 +230,10 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
       }
     } catch (e) {
       // Например, rate-limit сервера. Показываем ошибку честно + кэш, если есть.
+      // И пишем DNS-снимок в лог: сбои поиска не задевают sync (он живёт на
+      // уже открытом соединении), поэтому без этой строки они оставались
+      // незадокументированными.
+      _logDnsSnapshot('user_directory search failed: $e');
       if (mounted) {
         setState(() {
           _dirResults = _filterCache(
@@ -435,17 +489,42 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     padding: const EdgeInsets.fromLTRB(16, 14, 6, 6),
     child: Row(
       children: [
-        const Expanded(
-          child: Text(
-            'Чаты',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w600,
-              color: T.accent,
-              letterSpacing: -0.2,
-            ),
+        const Text(
+          'Чаты',
+          style: TextStyle(
+            fontSize: 20,
+            fontWeight: FontWeight.w600,
+            color: T.accent,
+            letterSpacing: -0.2,
           ),
         ),
+        // Плашка появляется ТОЛЬКО при сбое синхронизации.
+        if (!_online)
+          Container(
+            margin: const EdgeInsets.only(left: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: const Color(0xFFFDECEA),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: const Color(0xFFF5C6C0)),
+            ),
+            child: const Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(Icons.cloud_off, size: 14, color: Color(0xFFC62828)),
+                SizedBox(width: 4),
+                Text(
+                  'нет связи',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFFC62828),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        const Spacer(),
         IconButton(
           tooltip: 'Новая группа',
           icon: const Icon(Icons.group_add, color: T.accent, size: 22),
