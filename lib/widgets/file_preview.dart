@@ -1,7 +1,10 @@
 // widgets/file_preview.dart — вложения в чате.
 // FileAttachment — плитка файла внутри пузыря сообщения (иконка + имя + размер).
+//   • Плитку можно СХВАТИТЬ И ПЕРЕТАЩИТЬ из чата на рабочий стол / в папку /
+//     в письмо Outlook — файл скачается прямо туда (super_drag_and_drop).
 // По клику открывается окно-превью в духе Outlook:
 //   • картинки показываются прямо внутри;
+//   • PDF листается ПРЯМО В ОКНЕ (pdfrx) — окно почти во весь экран;
 //   • офисные/прочие файлы — карточка с иконкой, именем, размером;
 //   • «Открыть» — открыть в Word/Excel из ВРЕМЕННОЙ папки (в «Загрузки» не качается);
 //   • «Скачать» — сохранить в выбранное место.
@@ -17,6 +20,9 @@ import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:pdfrx/pdfrx.dart';
+import 'package:super_clipboard/super_clipboard.dart' show SimpleFileFormat;
+import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 
 import '../app_theme.dart';
 
@@ -125,6 +131,35 @@ String _typeLabel(String ext) {
   }
 }
 
+// Универсальный формат «просто файл» для перетаскивания наружу —
+// в пакете нет готового octet-stream, объявляем сами.
+const SimpleFileFormat _genericFile = SimpleFileFormat(
+  uniformTypeIdentifiers: ['public.data'],
+  mimeTypes: ['application/octet-stream'],
+);
+
+// Формат для перетаскивания наружу: где можем — точный тип,
+// для остальных — универсальный «поток байтов».
+FileFormat _dragFormatFor(String ext) {
+  switch (ext) {
+    case 'pdf':
+      return Formats.pdf;
+    case 'png':
+      return Formats.png;
+    case 'jpg':
+    case 'jpeg':
+      return Formats.jpeg;
+    case 'gif':
+      return Formats.gif;
+    case 'webp':
+      return Formats.webp;
+    case 'zip':
+      return Formats.zip;
+    default:
+      return _genericFile;
+  }
+}
+
 // ─────────────────────── плитка в пузыре ───────────────────────
 
 class FileAttachment extends StatelessWidget {
@@ -141,7 +176,7 @@ class FileAttachment extends StatelessWidget {
       if (_humanSize(size).isNotEmpty) _humanSize(size),
     ].join(' · ');
 
-    return Material(
+    final tile = Material(
       color: Colors.transparent,
       child: InkWell(
         borderRadius: BorderRadius.circular(10),
@@ -199,6 +234,33 @@ class FileAttachment extends StatelessWidget {
         ),
       ),
     );
+
+    // Перетаскивание файла ИЗ чата наружу (рабочий стол, папка, Outlook).
+    // Содержимое отдаётся как «виртуальный файл»: скачивание с сервера
+    // начинается только в момент, когда пользователь ОТПУСТИЛ файл
+    // в месте назначения — само перетаскивание стартует мгновенно.
+    return DragItemWidget(
+      allowedOperations: () => const [DropOperation.copy],
+      dragItemProvider: (request) async {
+        final item = DragItem(suggestedName: name);
+        item.addVirtualFile(
+          format: _dragFormatFor(ext),
+          provider: (sinkProvider, progress) async {
+            try {
+              final mf = await event.downloadAndDecryptAttachment();
+              final sink = sinkProvider(fileSize: mf.bytes.length);
+              sink.add(mf.bytes);
+              sink.close();
+            } catch (_) {
+              // Сеть/сервер недоступны — приёмник получит пустую передачу;
+              // пользователь просто повторит перетаскивание.
+            }
+          },
+        );
+        return item;
+      },
+      child: DraggableWidget(child: tile),
+    );
   }
 }
 
@@ -229,6 +291,7 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
   String get _ext => _extOf(_name);
   int? get _size => _sizeOf(widget.event);
   bool get _isImage => _isImageExt(_ext);
+  bool get _isPdf => _ext == 'pdf';
 
   @override
   void initState() {
@@ -302,11 +365,19 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
 
   @override
   Widget build(BuildContext context) {
+    // PDF и картинкам даём почти весь экран, остальным — компактную карточку.
+    final media = MediaQuery.of(context).size;
+    final big = _isPdf || _isImage;
+    final constraints = BoxConstraints(
+      maxWidth: big ? media.width * 0.85 : 460,
+      maxHeight: big ? media.height * 0.88 : 560,
+    );
+
     return Dialog(
       backgroundColor: T.panel,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 460, maxHeight: 560),
+        constraints: constraints,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -403,6 +474,13 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
         child: Center(
           child: Text(_error!, style: const TextStyle(color: Colors.redAccent)),
         ),
+      );
+    }
+    // PDF — листается прямо в окне.
+    if (_isPdf && _bytes != null) {
+      return Container(
+        color: const Color(0xFFE9ECF1),
+        child: PdfViewer.data(_bytes!, sourceName: _name),
       );
     }
     // Картинки — показываем прямо внутри.
