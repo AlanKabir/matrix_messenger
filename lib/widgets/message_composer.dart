@@ -70,14 +70,33 @@ class MessageComposerState extends State<MessageComposer> {
     });
   }
 
+  // Максимальный размер отправляемого файла — 5 МБ.
+  // Проверка здесь закрывает все пути: скрепку, Ctrl+V и перетаскивание.
+  static const int maxFileBytes = 5 * 1024 * 1024;
+
   // Отправка файла (используется кнопкой, Ctrl+V и drag-and-drop из панели).
-  Future<void> sendFile(Uint8List bytes, String name) async {
+  // Возвращает true, если файл принят к отправке.
+  Future<bool> sendFile(Uint8List bytes, String name) async {
+    if (bytes.length > maxFileBytes) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              '«$name» не отправлен: файл больше 5 МБ '
+              '(${(bytes.length / 1024 / 1024).toStringAsFixed(1)} МБ)',
+            ),
+          ),
+        );
+      }
+      return false;
+    }
     final reply = _replyTo;
     if (reply != null) setState(() => _replyTo = null);
     await widget.room.sendFileEvent(
       matrix.MatrixFile(bytes: bytes, name: name),
       inReplyTo: reply,
     );
+    return true;
   }
 
   // ─── Отправка текста ──────────────────────────────────────────────────────

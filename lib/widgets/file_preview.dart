@@ -12,9 +12,11 @@
 // Если компилятор не найдёт downloadAndDecryptAttachment — добавь строку:
 //   import 'package:matrix/encryption.dart';
 
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
@@ -23,6 +25,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:pdfrx/pdfrx.dart';
 import 'package:super_clipboard/super_clipboard.dart' show SimpleFileFormat;
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
+import 'package:xml/xml.dart';
 
 import '../app_theme.dart';
 
@@ -160,6 +163,135 @@ FileFormat _dragFormatFor(String ext) {
   }
 }
 
+// ─────────────────── упрощённый разбор DOCX (как в Outlook) ───────────────────
+// DOCX — это zip-архив; текст лежит в word/document.xml.
+// Вытаскиваем абзацы (с жирным/курсивом и заголовками) и таблицы построчно.
+// Точную вёрстку Word воспроизвести нельзя — это именно ПРЕДПРОСМОТР.
+
+class _DocxRun {
+  final String text;
+  final bool bold;
+  final bool italic;
+  const _DocxRun(this.text, this.bold, this.italic);
+}
+
+class _DocxBlock {
+  final List<_DocxRun> runs;
+  final int heading; // 0 — обычный абзац, 1..9 — уровень заголовка
+  final bool isTableRow;
+  const _DocxBlock(this.runs, {this.heading = 0, this.isTableRow = false});
+
+  String get plain => runs.map((r) => r.text).join();
+}
+
+List<_DocxBlock>? _parseDocx(Uint8List bytes) {
+  try {
+    final archive = ZipDecoder().decodeBytes(bytes);
+    final entry = archive.findFile('word/document.xml');
+    if (entry == null) return null;
+    final xmlText = utf8.decode(entry.content as List<int>);
+    final doc = XmlDocument.parse(xmlText);
+    final bodies = doc.findAllElements('w:body');
+    if (bodies.isEmpty) return null;
+    final body = bodies.first;
+
+    final blocks = <_DocxBlock>[];
+    var totalChars = 0;
+    const maxBlocks = 400;
+    const maxChars = 40000;
+
+    _DocxBlock parseParagraph(XmlElement p) {
+      var heading = 0;
+      final style =
+          p
+              .getElement('w:pPr')
+              ?.getElement('w:pStyle')
+              ?.getAttribute('w:val') ??
+          '';
+      final s = style.toLowerCase();
+      if (s.startsWith('heading')) {
+        heading = int.tryParse(s.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1;
+        if (heading > 9) heading = 9;
+      }
+      final runs = <_DocxRun>[];
+      for (final r in p.findElements('w:r')) {
+        final rPr = r.getElement('w:rPr');
+        final bold = rPr?.getElement('w:b') != null;
+        final italic = rPr?.getElement('w:i') != null;
+        final buf = StringBuffer();
+        for (final child in r.children) {
+          if (child is XmlElement) {
+            switch (child.name.local) {
+              case 't':
+                buf.write(child.innerText);
+                break;
+              case 'br':
+                buf.write('\n');
+                break;
+              case 'tab':
+                buf.write('    ');
+                break;
+            }
+          }
+        }
+        if (buf.isNotEmpty) {
+          runs.add(_DocxRun(buf.toString(), bold, italic));
+        }
+      }
+      return _DocxBlock(runs, heading: heading);
+    }
+
+    void addBlock(_DocxBlock b) {
+      if (blocks.length >= maxBlocks || totalChars >= maxChars) return;
+      totalChars += b.plain.length;
+      blocks.add(b);
+    }
+
+    for (final node in body.children) {
+      if (node is! XmlElement) continue;
+      if (blocks.length >= maxBlocks || totalChars >= maxChars) break;
+      switch (node.name.local) {
+        case 'p':
+          addBlock(parseParagraph(node));
+          break;
+        case 'tbl':
+          for (final tr in node.findAllElements('w:tr')) {
+            final cells = <String>[];
+            for (final tc in tr.findElements('w:tc')) {
+              final cellText = tc
+                  .findAllElements('w:t')
+                  .map((t) => t.innerText)
+                  .join();
+              cells.add(cellText.trim());
+            }
+            addBlock(
+              _DocxBlock([
+                _DocxRun(cells.join('  |  '), false, false),
+              ], isTableRow: true),
+            );
+          }
+          break;
+      }
+    }
+
+    final truncated = blocks.length >= maxBlocks || totalChars >= maxChars;
+    if (truncated) {
+      blocks.add(
+        const _DocxBlock([
+          _DocxRun(
+            '… документ показан не полностью — «Открыть» для Word',
+            false,
+            true,
+          ),
+        ]),
+      );
+    }
+    return blocks;
+  } catch (_) {
+    return null;
+  }
+}
+
 // ─────────────────────── плитка в пузыре ───────────────────────
 
 class FileAttachment extends StatelessWidget {
@@ -293,6 +425,9 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
   bool get _isImage => _isImageExt(_ext);
   bool get _isPdf => _ext == 'pdf';
 
+  // Разобранные блоки DOCX (null — не docx или разобрать не удалось).
+  List<_DocxBlock>? _docxBlocks;
+
   @override
   void initState() {
     super.initState();
@@ -303,8 +438,13 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
     try {
       final mf = await widget.event.downloadAndDecryptAttachment();
       if (!mounted) return;
+      List<_DocxBlock>? docx;
+      if (_extOf(_fileNameOf(widget.event)) == 'docx') {
+        docx = _parseDocx(mf.bytes);
+      }
       setState(() {
         _bytes = mf.bytes;
+        _docxBlocks = docx;
         _loading = false;
       });
     } catch (_) {
@@ -365,9 +505,10 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
 
   @override
   Widget build(BuildContext context) {
-    // PDF и картинкам даём почти весь экран, остальным — компактную карточку.
+    // PDF, картинкам и DOCX-превью даём почти весь экран,
+    // остальным — компактную карточку.
     final media = MediaQuery.of(context).size;
-    final big = _isPdf || _isImage;
+    final big = _isPdf || _isImage || _docxBlocks != null;
     final constraints = BoxConstraints(
       maxWidth: big ? media.width * 0.85 : 460,
       maxHeight: big ? media.height * 0.88 : 560,
@@ -461,6 +602,54 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
     );
   }
 
+  // Отрисовка одного блока DOCX-превью.
+  Widget _docxBlockWidget(_DocxBlock b) {
+    // Строка таблицы — серым фоном, моноширинно-компактно.
+    if (b.isTableRow) {
+      return Container(
+        width: double.infinity,
+        margin: const EdgeInsets.symmetric(vertical: 1),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF2F5F9),
+          border: Border.all(color: T.border, width: 0.5),
+        ),
+        child: Text(
+          b.plain,
+          style: const TextStyle(fontSize: 13, color: T.text, height: 1.3),
+        ),
+      );
+    }
+    // Пустой абзац — просто отступ.
+    if (b.plain.trim().isEmpty) return const SizedBox(height: 10);
+
+    final isHeading = b.heading > 0;
+    final baseSize = isHeading ? (b.heading == 1 ? 19.0 : 16.5) : 14.0;
+    return Padding(
+      padding: EdgeInsets.only(
+        top: isHeading ? 14 : 3,
+        bottom: isHeading ? 6 : 3,
+      ),
+      child: Text.rich(
+        TextSpan(
+          children: [
+            for (final r in b.runs)
+              TextSpan(
+                text: r.text,
+                style: TextStyle(
+                  fontWeight: (isHeading || r.bold)
+                      ? FontWeight.w600
+                      : FontWeight.normal,
+                  fontStyle: r.italic ? FontStyle.italic : FontStyle.normal,
+                ),
+              ),
+          ],
+        ),
+        style: TextStyle(fontSize: baseSize, color: T.text, height: 1.45),
+      ),
+    );
+  }
+
   Widget _buildBody() {
     if (_loading) {
       return const SizedBox(
@@ -481,6 +670,17 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
       return Container(
         color: const Color(0xFFE9ECF1),
         child: PdfViewer.data(_bytes!, sourceName: _name),
+      );
+    }
+    // DOCX — упрощённый предпросмотр текста (как в Outlook).
+    if (_docxBlocks != null) {
+      return Container(
+        color: Colors.white,
+        child: ListView.builder(
+          padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 20),
+          itemCount: _docxBlocks!.length,
+          itemBuilder: (_, i) => _docxBlockWidget(_docxBlocks![i]),
+        ),
       );
     }
     // Картинки — показываем прямо внутри.

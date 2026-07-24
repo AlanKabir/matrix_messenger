@@ -83,6 +83,7 @@ flutter:
     - assets/certs/sgo-msg-ca.crt
     - assets/emblem.png
     - assets/tray_icon.ico
+    - assets/emblem_title.png
 
   # To add assets to your application, add an assets section, like this:
   # assets:

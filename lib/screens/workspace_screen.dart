@@ -832,19 +832,52 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  // Заглушка правой части, пока чат не выбран: логотип в стиле
+  // водяного знака (как герб на фоне чата).
+  // НАСТРОЙКА: _opacity (0.1 еле видно … 0.5 отчётливо),
+  //            _sizeFactor (доля от размера области).
+  static const double _emptyOpacity = 0.35;
+  static const double _emptySizeFactor = 0.45;
+
+  static const List<double> _greyMatrix = <double>[
+    0.2126, 0.7152, 0.0722, 0, 0, // R
+    0.2126, 0.7152, 0.0722, 0, 0, // G
+    0.2126, 0.7152, 0.0722, 0, 0, // B
+    0, 0, 0, 1, 0, // A
+  ];
+
   Widget _emptyPlaceholder() => Container(
     color: T.feedBg,
-    child: const Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(Icons.forum_outlined, size: 96, color: Color(0xFFC3CCDA)),
-          SizedBox(height: 16),
-          Text(
-            'Выберите чат или найдите сотрудника',
-            style: TextStyle(color: T.textSec),
+    child: Center(
+      child: FractionallySizedBox(
+        widthFactor: _emptySizeFactor,
+        heightFactor: _emptySizeFactor,
+        child: Opacity(
+          opacity: _emptyOpacity,
+          child: ColorFiltered(
+            colorFilter: const ColorFilter.matrix(_greyMatrix),
+            child: Image.asset(
+              'assets/emblem_title.png',
+              fit: BoxFit.contain,
+              // Если asset не подключён — прежняя заглушка с иконкой.
+              errorBuilder: (_, _, _) => const Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.forum_outlined,
+                    size: 96,
+                    color: Color(0xFFC3CCDA),
+                  ),
+                  SizedBox(height: 16),
+                  Text(
+                    'Выберите чат или найдите сотрудника',
+                    style: TextStyle(color: T.textSec),
+                  ),
+                ],
+              ),
+            ),
           ),
-        ],
+        ),
       ),
     ),
   );

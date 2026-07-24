@@ -12,11 +12,12 @@
 //    закреплённых и по клику на цитату ответа (reply).
 
 import 'dart:async';
+import 'dart:io';
 
-import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
+import 'package:super_drag_and_drop/super_drag_and_drop.dart';
 
 import '../app_theme.dart';
 import '../services/matrix_service.dart';
@@ -346,22 +347,43 @@ class _ChatPanelState extends State<ChatPanel> {
   // ---------------------------------------------------------------------------
 
   // Обработка перетащенных файлов (может быть несколько сразу).
-  Future<void> _onDrop(DropDoneDetails detail) async {
-    if (detail.files.isEmpty) return;
+  // Приём через DropRegion (super_drag_and_drop) — тот же движок,
+  // что и перетаскивание ИЗ чата, поэтому они не конфликтуют.
+  Future<void> _onPerformDrop(PerformDropEvent event) async {
     int sent = 0;
-    for (final file in detail.files) {
-      try {
-        final bytes = await file.readAsBytes();
-        final name = file.name;
-        await _composerKey.currentState?.sendFile(bytes, name);
-        sent++;
-      } catch (_) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Не удалось отправить: ${file.name}')),
-          );
-        }
-      }
+    for (final item in event.session.items) {
+      final reader = item.dataReader;
+      if (reader == null || !reader.canProvide(Formats.fileUri)) continue;
+      final done = Completer<void>();
+      reader.getValue(
+        Formats.fileUri,
+        (uri) async {
+          try {
+            if (uri != null) {
+              final f = File(uri.toFilePath());
+              final bytes = await f.readAsBytes();
+              final name = uri.pathSegments.isNotEmpty
+                  ? Uri.decodeComponent(uri.pathSegments.last)
+                  : 'file';
+              final ok = await _composerKey.currentState?.sendFile(bytes, name);
+              if (ok == true) sent++;
+            }
+          } catch (_) {
+            // Например, бросили папку или файл без прав чтения — пропускаем.
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Не удалось отправить файл')),
+              );
+            }
+          } finally {
+            if (!done.isCompleted) done.complete();
+          }
+        },
+        onError: (_) {
+          if (!done.isCompleted) done.complete();
+        },
+      );
+      await done.future;
     }
     if (mounted && sent > 1) {
       ScaffoldMessenger.of(
@@ -510,12 +532,23 @@ class _ChatPanelState extends State<ChatPanel> {
         _pinnedBar(),
         // ------ лента (с зоной приёма перетащенных файлов) ------
         Expanded(
-          child: DropTarget(
-            onDragEntered: (_) => setState(() => _dragging = true),
-            onDragExited: (_) => setState(() => _dragging = false),
-            onDragDone: (detail) {
+          child: DropRegion(
+            formats: const [Formats.fileUri],
+            hitTestBehavior: HitTestBehavior.opaque,
+            onDropOver: (event) {
+              // Принимаем копирование файлов из Проводника.
+              if (event.session.allowedOperations.contains(
+                DropOperation.copy,
+              )) {
+                return DropOperation.copy;
+              }
+              return DropOperation.none;
+            },
+            onDropEnter: (_) => setState(() => _dragging = true),
+            onDropLeave: (_) => setState(() => _dragging = false),
+            onPerformDrop: (event) async {
               setState(() => _dragging = false);
-              _onDrop(detail);
+              await _onPerformDrop(event);
             },
             child: Stack(
               children: [
