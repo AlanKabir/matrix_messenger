@@ -1,7 +1,8 @@
 // widgets/message_bubble.dart — пузырь сообщения в ленте чата.
-// Вынесен из chat_panel.dart. Умеет: цитату ответа (reply), кликабельные
-// ссылки, показ отредактированного текста с пометкой «изменено»,
-// контекстное меню (Ответить / Редактировать / Переслать / Удалить у всех /
+// Умеет: цитату ответа (reply) с переходом к оригиналу по клику,
+// кликабельные ссылки, показ отредактированного текста с пометкой
+// «изменено», подсветку при прыжке к сообщению, контекстное меню
+// (Ответить / Редактировать / Закрепить / Переслать / Удалить у всех /
 // Повторить отправку / Удалить).
 
 import 'package:flutter/material.dart';
@@ -60,6 +61,12 @@ class MessageBubble extends StatelessWidget {
   // композер подставит его в поле ввода.
   final void Function(String currentText) onEdit;
 
+  // Прыжок к сообщению по id (клик по цитате ответа).
+  final void Function(String eventId)? onJumpTo;
+
+  // Подсветить пузырь (после прыжка к нему).
+  final bool highlighted;
+
   const MessageBubble({
     super.key,
     required this.event,
@@ -71,6 +78,8 @@ class MessageBubble extends StatelessWidget {
     required this.onForward,
     required this.onReply,
     required this.onEdit,
+    this.onJumpTo,
+    this.highlighted = false,
   });
 
   bool get _isFile =>
@@ -120,67 +129,74 @@ class MessageBubble extends StatelessWidget {
   }
 
   // Блок-цитата внутри пузыря: на что был дан этот ответ.
+  // Клик по цитате — прыжок к оригинальному сообщению.
   Widget _quotedBlock() {
-    return FutureBuilder<matrix.Event?>(
-      future: event.getReplyEvent(timeline),
-      builder: (context, snap) {
-        final src = snap.data;
-        final name = src == null
-            ? '…'
-            : room
-                  .unsafeGetUserFromMemoryOrFallback(src.senderId)
-                  .calcDisplayname();
-        String text;
-        if (src == null) {
-          text = snap.connectionState == ConnectionState.done
-              ? 'Сообщение недоступно'
-              : 'Загрузка…';
-        } else if (src.redacted) {
-          text = 'Сообщение удалено';
-        } else {
-          text = eventSnippet(src);
-        }
-        final baseColor = isOwn ? Colors.white : T.steel;
-        return Container(
-          margin: const EdgeInsets.only(bottom: 6),
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-          decoration: BoxDecoration(
-            color: (isOwn ? Colors.white : T.steel).withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(8),
-            border: Border(
-              left: BorderSide(
-                color: isOwn ? Colors.white70 : T.gold,
-                width: 3,
+    return GestureDetector(
+      onTap: () {
+        final id = event.relationshipEventId;
+        if (id != null) onJumpTo?.call(id);
+      },
+      child: FutureBuilder<matrix.Event?>(
+        future: event.getReplyEvent(timeline),
+        builder: (context, snap) {
+          final src = snap.data;
+          final name = src == null
+              ? '…'
+              : room
+                    .unsafeGetUserFromMemoryOrFallback(src.senderId)
+                    .calcDisplayname();
+          String text;
+          if (src == null) {
+            text = snap.connectionState == ConnectionState.done
+                ? 'Сообщение недоступно'
+                : 'Загрузка…';
+          } else if (src.redacted) {
+            text = 'Сообщение удалено';
+          } else {
+            text = eventSnippet(src);
+          }
+          final baseColor = isOwn ? Colors.white : T.steel;
+          return Container(
+            margin: const EdgeInsets.only(bottom: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+            decoration: BoxDecoration(
+              color: (isOwn ? Colors.white : T.steel).withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(8),
+              border: Border(
+                left: BorderSide(
+                  color: isOwn ? Colors.white70 : T.gold,
+                  width: 3,
+                ),
               ),
             ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                name,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w600,
-                  color: baseColor,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: baseColor,
+                  ),
                 ),
-              ),
-              Text(
-                text,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 12,
-                  color: isOwn ? Colors.white70 : T.textSec,
+                Text(
+                  text,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isOwn ? Colors.white70 : T.textSec,
+                  ),
                 ),
-              ),
-            ],
-          ),
-        );
-      },
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -207,103 +223,114 @@ class MessageBubble extends StatelessWidget {
       child: GestureDetector(
         onSecondaryTapDown: (d) => _menu(context, d.globalPosition),
         onLongPressStart: (d) => _menu(context, d.globalPosition),
-        child: Container(
-          constraints: const BoxConstraints(maxWidth: 520),
-          margin: const EdgeInsets.symmetric(vertical: 3),
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+        // Подсветка при прыжке: мягкая золотая «капсула» вокруг пузыря.
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 250),
+          padding: const EdgeInsets.all(2),
           decoration: BoxDecoration(
-            color: isOwn ? T.ownBubble : T.inBubble,
-            borderRadius: BorderRadius.only(
-              topLeft: const Radius.circular(16),
-              topRight: const Radius.circular(16),
-              bottomLeft: Radius.circular(isOwn ? 16 : 5),
-              bottomRight: Radius.circular(isOwn ? 5 : 16),
-            ),
-            // Белые входящие отделяем от фона рамкой; лёгкая тень
-            // приподнимает все пузыри над лентой.
-            border: isOwn ? null : Border.all(color: T.border),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x14000000),
-                blurRadius: 3,
-                offset: Offset(0, 1),
-              ),
-            ],
+            color: highlighted
+                ? T.gold.withValues(alpha: 0.22)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(19),
           ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (showAuthor)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 2),
-                  child: Text(
-                    senderName,
-                    style: const TextStyle(
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w600,
-                      color: T.steel,
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 520),
+            margin: const EdgeInsets.symmetric(vertical: 3),
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
+            decoration: BoxDecoration(
+              color: isOwn ? T.ownBubble : T.inBubble,
+              borderRadius: BorderRadius.only(
+                topLeft: const Radius.circular(16),
+                topRight: const Radius.circular(16),
+                bottomLeft: Radius.circular(isOwn ? 16 : 5),
+                bottomRight: Radius.circular(isOwn ? 5 : 16),
+              ),
+              // Белые входящие отделяем от фона рамкой; лёгкая тень
+              // приподнимает все пузыри над лентой.
+              border: isOwn ? null : Border.all(color: T.border),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x14000000),
+                  blurRadius: 3,
+                  offset: Offset(0, 1),
+                ),
+              ],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (showAuthor)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text(
+                      senderName,
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w600,
+                        color: T.steel,
+                      ),
                     ),
                   ),
-                ),
-              if (fwdFrom != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.shortcut, size: 14, color: metaColor),
-                      const SizedBox(width: 4),
+                if (fwdFrom != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.shortcut, size: 14, color: metaColor),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Переслано от $fwdFrom',
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontStyle: FontStyle.italic,
+                            color: metaColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                if (_isReply && !waitingKeys) _quotedBlock(),
+                if (_isFile && !waitingKeys)
+                  FileAttachment(event: event)
+                else
+                  LinkifyText(
+                    text: bodyText,
+                    style: TextStyle(
+                      fontSize: 14.5,
+                      height: 1.3,
+                      color: textColor,
+                    ),
+                    linkColor: isOwn ? Colors.white : T.accent,
+                  ),
+                const SizedBox(height: 2),
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_edited) ...[
                       Text(
-                        'Переслано от $fwdFrom',
+                        'изменено',
                         style: TextStyle(
-                          fontSize: 12,
+                          fontSize: 10.5,
                           fontStyle: FontStyle.italic,
                           color: metaColor,
                         ),
                       ),
+                      const SizedBox(width: 6),
                     ],
-                  ),
-                ),
-              if (_isReply && !waitingKeys) _quotedBlock(),
-              if (_isFile && !waitingKeys)
-                FileAttachment(event: event)
-              else
-                LinkifyText(
-                  text: bodyText,
-                  style: TextStyle(
-                    fontSize: 14.5,
-                    height: 1.3,
-                    color: textColor,
-                  ),
-                  linkColor: isOwn ? Colors.white : T.accent,
-                ),
-              const SizedBox(height: 2),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (_edited) ...[
                     Text(
-                      'изменено',
-                      style: TextStyle(
-                        fontSize: 10.5,
-                        fontStyle: FontStyle.italic,
-                        color: metaColor,
-                      ),
+                      timeStr,
+                      style: TextStyle(fontSize: 11, color: metaColor),
                     ),
-                    const SizedBox(width: 6),
+                    if (isOwn) ...[
+                      const SizedBox(width: 4),
+                      _ownTicks(ownEventStatus(event, room)),
+                    ],
                   ],
-                  Text(
-                    timeStr,
-                    style: TextStyle(fontSize: 11, color: metaColor),
-                  ),
-                  if (isOwn) ...[
-                    const SizedBox(width: 4),
-                    _ownTicks(ownEventStatus(event, room)),
-                  ],
-                ],
-              ),
-            ],
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -313,6 +340,7 @@ class MessageBubble extends StatelessWidget {
   void _menu(BuildContext context, Offset pos) async {
     // Ошибка отправки? (тот же статус, по которому рисуется янтарный значок)
     final isError = ownEventStatus(event, room) == -2;
+    final isPinned = room.pinnedEventIds.contains(event.eventId);
 
     final List<PopupMenuEntry<String>> items = [];
     if (isOwn && isError) {
@@ -334,6 +362,12 @@ class MessageBubble extends StatelessWidget {
           const PopupMenuItem(value: 'edit', child: Text('Редактировать')),
         );
       }
+      items.add(
+        PopupMenuItem(
+          value: 'pin',
+          child: Text(isPinned ? 'Открепить' : 'Закрепить'),
+        ),
+      );
       items.add(
         const PopupMenuItem(value: 'forward', child: Text('Переслать...')),
       );
@@ -363,6 +397,9 @@ class MessageBubble extends StatelessWidget {
         // Передаём актуальный (уже отредактированный) текст без цитаты.
         onEdit(stripReplyFallback(_display.body));
         break;
+      case 'pin':
+        await _togglePin(context, isPinned);
+        break;
       case 'forward':
         onForward();
         break;
@@ -375,6 +412,28 @@ class MessageBubble extends StatelessWidget {
       case 'redact':
         await _confirmRedact(context);
         break;
+    }
+  }
+
+  // Закрепить/открепить сообщение (state-событие m.room.pinned_events).
+  Future<void> _togglePin(BuildContext context, bool isPinned) async {
+    try {
+      final ids = List<String>.from(room.pinnedEventIds);
+      if (isPinned) {
+        ids.remove(event.eventId);
+      } else {
+        ids.add(event.eventId);
+      }
+      await room.setPinnedEvents(ids);
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Не удалось изменить закреплённые (нет прав в этой группе)',
+          ),
+        ),
+      );
     }
   }
 

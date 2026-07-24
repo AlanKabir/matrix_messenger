@@ -54,6 +54,7 @@ dependencies:
   windows_single_instance: ^1.1.0
   super_clipboard: ^0.9.1
   launch_at_startup: ^0.5.1
+  scrollable_positioned_list: ^0.3.8
 
 dev_dependencies:
   flutter_test:
