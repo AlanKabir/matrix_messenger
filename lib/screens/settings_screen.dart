@@ -122,26 +122,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     InitialsAvatar(name: name, radius: 28),
                     const SizedBox(width: 14),
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            name,
-                            style: const TextStyle(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w600,
-                              color: T.text,
-                            ),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            me,
-                            style: const TextStyle(
-                              fontSize: 13,
-                              color: T.textSec,
-                            ),
-                          ),
-                        ],
+                      child: Text(
+                        name,
+                        style: const TextStyle(
+                          fontSize: 17,
+                          fontWeight: FontWeight.w600,
+                          color: T.text,
+                        ),
                       ),
                     ),
                   ],

@@ -65,17 +65,51 @@ class _ChatPanelState extends State<ChatPanel> {
   // true, пока файл «висит» над областью чата (для подсветки).
   bool _dragging = false;
 
+  // Защита от повторных запросов «прочитано» на каждое обновление ленты.
+  bool _markingRead = false;
+
   void _loadTimeline() {
     _timeline = null;
     _timelineFuture = widget.room.getTimeline(
       onUpdate: () {
         if (mounted) setState(() {});
+        // Чат открыт — значит сообщения прочитаны. Без этого счётчик
+        // непрочитанных не сбрасывался, пока не переключишь чат.
+        _markRead();
       },
     );
     _timelineFuture.then((t) {
       _timeline = t;
       t.setReadMarker();
     });
+    // Synapse присылает состав комнаты лениво (только тех, кто недавно писал).
+    // Запрашиваем полный список участников явно — иначе в группе видно
+    // «3 участника» вместо реальных пяти, пока остальные не напишут.
+    _refreshParticipants();
+  }
+
+  // Ставит отметку «прочитано» — только когда есть что сбрасывать,
+  // чтобы не дёргать сервер лишними запросами.
+  void _markRead() {
+    if (_markingRead) return;
+    if (widget.room.notificationCount == 0) return;
+    final tl = _timeline;
+    if (tl == null) return;
+    _markingRead = true;
+    tl.setReadMarker().whenComplete(() {
+      _markingRead = false;
+      if (mounted) setState(() {});
+    });
+  }
+
+  Future<void> _refreshParticipants() async {
+    try {
+      await widget.room.postLoad();
+    } catch (_) {}
+    try {
+      await widget.room.requestParticipants();
+    } catch (_) {}
+    if (mounted) setState(() {});
   }
 
   @override
@@ -365,21 +399,32 @@ class _ChatPanelState extends State<ChatPanel> {
               final name = uri.pathSegments.isNotEmpty
                   ? Uri.decodeComponent(uri.pathSegments.last)
                   : 'file';
+              if (bytes.isEmpty) {
+                throw Exception('файл пустой или ещё не дописан на диск');
+              }
               final ok = await _composerKey.currentState?.sendFile(bytes, name);
               if (ok == true) sent++;
             }
-          } catch (_) {
-            // Например, бросили папку или файл без прав чтения — пропускаем.
+          } catch (e) {
+            // Показываем настоящую причину — так понятно, что именно пошло не так
+            // (занят другим приложением, нет прав, пустой файл и т.п.).
+            debugPrint('DROP ERROR: $e');
             if (mounted) {
               ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Не удалось отправить файл')),
+                SnackBar(content: Text('Не удалось отправить файл: $e')),
               );
             }
           } finally {
             if (!done.isCompleted) done.complete();
           }
         },
-        onError: (_) {
+        onError: (e) {
+          debugPrint('DROP READ ERROR: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Не удалось прочитать файл: $e')),
+            );
+          }
           if (!done.isCompleted) done.complete();
         },
       );
@@ -409,6 +454,49 @@ class _ChatPanelState extends State<ChatPanel> {
   String _senderName(matrix.Event e) {
     final user = widget.room.unsafeGetUserFromMemoryOrFallback(e.senderId);
     return user.calcDisplayname();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Служебные события группы (как в WhatsApp): вошёл/вышел/пригласил/права.
+
+  bool _isSystemEvent(matrix.Event e) {
+    if (e.type == 'm.room.power_levels') return true;
+    if (e.type != 'm.room.member') return false;
+    // Показываем только СМЕНУ членства; смену имени/аватара — нет (шум).
+    final now = e.content['membership'];
+    final prev = e.prevContent?['membership'];
+    return now != prev;
+  }
+
+  String _systemText(matrix.Event e) {
+    String nameOf(String id) =>
+        widget.room.unsafeGetUserFromMemoryOrFallback(id).calcDisplayname();
+    if (e.type == 'm.room.power_levels') {
+      return '${nameOf(e.senderId)} изменил(а) права в группе';
+    }
+    final target = e.stateKey ?? e.senderId;
+    final t = nameOf(target);
+    final s = nameOf(e.senderId);
+    final now = e.content['membership'];
+    final prev = e.prevContent?['membership'];
+    switch (now) {
+      case 'join':
+        return '$t присоединился(-ась) к группе';
+      case 'invite':
+        return '$s пригласил(а) $t';
+      case 'leave':
+        if (e.senderId == target) {
+          return prev == 'invite'
+              ? '$t отклонил(а) приглашение'
+              : '$t вышел(-ла) из группы';
+        }
+        return prev == 'invite'
+            ? '$s отменил(а) приглашение $t'
+            : '$s удалил(а) $t из группы';
+      case 'ban':
+        return '$s заблокировал(а) $t';
+    }
+    return '';
   }
 
   @override
@@ -575,19 +663,21 @@ class _ChatPanelState extends State<ChatPanel> {
                     }
                     final timeline = snapshot.data!;
                     final clearedTs = widget.service.clearedTsFor(room.id);
-                    final events = timeline.events
-                        .where(
-                          (e) =>
-                              (e.relationshipEventId == null ||
-                                  e.relationshipType == 'm.in_reply_to') &&
-                              !e.redacted &&
-                              (e.type == 'm.room.message' ||
-                                  e.type == 'm.room.encrypted') &&
-                              (clearedTs == null ||
-                                  e.originServerTs.millisecondsSinceEpoch >
-                                      clearedTs),
-                        )
-                        .toList();
+                    final events = timeline.events.where((e) {
+                      final afterClear =
+                          clearedTs == null ||
+                          e.originServerTs.millisecondsSinceEpoch > clearedTs;
+                      if (!afterClear) return false;
+                      final isMsg =
+                          (e.relationshipEventId == null ||
+                              e.relationshipType == 'm.in_reply_to') &&
+                          !e.redacted &&
+                          (e.type == 'm.room.message' ||
+                              e.type == 'm.room.encrypted');
+                      // Служебные надписи (вошёл/вышел/права) — только в группах.
+                      final isSystem = isGroup && _isSystemEvent(e);
+                      return isMsg || isSystem;
+                    }).toList();
                     _lastEvents = events;
                     if (events.isEmpty) {
                       return const Center(
@@ -607,6 +697,10 @@ class _ChatPanelState extends State<ChatPanel> {
                       itemCount: events.length,
                       itemBuilder: (context, index) {
                         final event = events[index];
+                        // Служебное событие — маленькая надпись по центру.
+                        if (_isSystemEvent(event)) {
+                          return _SystemNotice(text: _systemText(event));
+                        }
                         final isOwn =
                             event.senderId == widget.room.client.userID;
                         return MessageBubble(
@@ -783,6 +877,34 @@ class _ChatPanelState extends State<ChatPanel> {
             ),
           const SizedBox(height: 4),
         ],
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Служебная надпись в ленте («X присоединился», «Y удалил Z», …) —
+// маленькая серая капсула по центру, как в WhatsApp.
+class _SystemNotice extends StatelessWidget {
+  final String text;
+  const _SystemNotice({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    if (text.isEmpty) return const SizedBox.shrink();
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        decoration: BoxDecoration(
+          color: const Color(0xFFDDE5F0),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Text(
+          text,
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 11.5, color: T.textSec),
+        ),
       ),
     );
   }

@@ -88,7 +88,38 @@ class MessageBubble extends StatelessWidget {
       event.messageType == matrix.MessageTypes.Video ||
       event.messageType == matrix.MessageTypes.Audio;
 
-  bool get _isReply => event.relationshipType == 'm.in_reply_to';
+  // ID сообщения, на которое отвечали. В matrix 7.4.0 нет готового
+  // распознавания m.in_reply_to, поэтому читаем содержимое события сами —
+  // так работает в любой версии SDK.
+  String? get _replyToId {
+    final rel = event.content['m.relates_to'];
+    if (rel is Map) {
+      final inReply = rel['m.in_reply_to'];
+      if (inReply is Map) {
+        final id = inReply['event_id'];
+        if (id is String && id.isNotEmpty) return id;
+      }
+    }
+    return null;
+  }
+
+  bool get _isReply => _replyToId != null;
+
+  // Ищем цитируемое сообщение сначала в загруженной ленте, потом на сервере.
+  Future<matrix.Event?> _fetchQuoted() async {
+    final id = _replyToId;
+    if (id == null) return null;
+    try {
+      for (final e in timeline.events) {
+        if (e.eventId == id) return e;
+      }
+    } catch (_) {}
+    try {
+      return await room.getEventById(id);
+    } catch (_) {
+      return null;
+    }
+  }
 
   // Событие «как показывать»: если сообщение редактировали, SDK подставит
   // последний текст (m.replace).
@@ -133,11 +164,11 @@ class MessageBubble extends StatelessWidget {
   Widget _quotedBlock() {
     return GestureDetector(
       onTap: () {
-        final id = event.relationshipEventId;
+        final id = _replyToId;
         if (id != null) onJumpTo?.call(id);
       },
       child: FutureBuilder<matrix.Event?>(
-        future: event.getReplyEvent(timeline),
+        future: _fetchQuoted(),
         builder: (context, snap) {
           final src = snap.data;
           final name = src == null
@@ -212,8 +243,9 @@ class MessageBubble extends StatelessWidget {
         event.type == 'm.room.encrypted' &&
         (bodyText.isEmpty || bodyText.contains('Unknown'));
     if (waitingKeys) bodyText = '⏳ Идет запрос ключей шифрования...';
-    // У ответов убираем из текста служебную цитату-заглушку.
-    if (_isReply && !waitingKeys) bodyText = stripReplyFallback(bodyText);
+    // Служебная цитата-заглушка («> <@user:server> текст») в начале тела —
+    // срезаем всегда, а не только у распознанных ответов.
+    if (!waitingKeys) bodyText = stripReplyFallback(bodyText);
 
     final textColor = isOwn ? Colors.white : T.text;
     final metaColor = isOwn ? Colors.white70 : T.hint;

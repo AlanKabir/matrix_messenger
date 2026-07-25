@@ -566,13 +566,17 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   );
 
   // ---------------------------------------------------------------------------
-  // Обычный список чатов (поиск пустой).
+  // Обычный список чатов (поиск пустой). Сверху — приглашения в группы.
   Widget _roomList() {
     return StreamBuilder(
       stream: _client.onSync.stream,
       builder: (context, snapshot) {
+        // Групповые приглашения (личные принимаются автоматически в сервисе).
+        final invites = _client.rooms
+            .where((r) => r.membership == matrix.Membership.invite)
+            .toList();
         final rooms = _visibleRooms();
-        if (rooms.isEmpty) {
+        if (rooms.isEmpty && invites.isEmpty) {
           return const Center(
             child: Text(
               'Нет активных чатов',
@@ -581,10 +585,87 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           );
         }
         return ListView.builder(
-          itemCount: rooms.length,
-          itemBuilder: (context, index) => _roomTile(rooms[index]),
+          itemCount: invites.length + rooms.length,
+          itemBuilder: (context, index) {
+            if (index < invites.length) return _inviteTile(invites[index]);
+            return _roomTile(rooms[index - invites.length]);
+          },
         );
       },
+    );
+  }
+
+  // Принять приглашение в группу: вступить и сразу подтянуть участников,
+  // чтобы состав группы был виден полностью, а не «2 участника».
+  Future<void> _acceptInvite(matrix.Room room) async {
+    try {
+      await room.join();
+      try {
+        await room.postLoad();
+      } catch (_) {}
+      try {
+        await room.requestParticipants();
+      } catch (_) {}
+      if (mounted) setState(() => _selectedRoom = room);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось вступить в группу: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _declineInvite(matrix.Room room) async {
+    try {
+      await room.leave();
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Не удалось отклонить: $e')));
+      }
+    }
+  }
+
+  // Плашка приглашения в группу (светло-золотая, с кнопками).
+  Widget _inviteTile(matrix.Room room) {
+    final title = room.getLocalizedDisplayname();
+    return Material(
+      color: const Color(0xFFFDF6E3),
+      child: ListTile(
+        leading: InitialsAvatar(name: title, group: true),
+        title: Text(
+          title,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontWeight: FontWeight.w600, color: T.text),
+        ),
+        subtitle: const Text(
+          'Приглашение в группу',
+          style: TextStyle(fontSize: 12.5, color: T.steel),
+        ),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              tooltip: 'Принять',
+              icon: const Icon(
+                Icons.check_circle,
+                color: Color(0xFF2E7D32),
+                size: 26,
+              ),
+              onPressed: () => _acceptInvite(room),
+            ),
+            IconButton(
+              tooltip: 'Отклонить',
+              icon: const Icon(Icons.cancel, color: Colors.redAccent, size: 26),
+              onPressed: () => _declineInvite(room),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

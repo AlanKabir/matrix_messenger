@@ -8,6 +8,11 @@
 //
 // Права: менять роли и настройки может тот, у кого уровень >= 50
 // (в Matrix это «модератор/админ»). У создателя группы обычно 100.
+//
+// ВАЖНО про состав группы: Synapse присылает участников ЛЕНИВО — только тех,
+// кто недавно писал. Поэтому при открытии экрана состав запрашивается
+// с сервера принудительно (_refreshMembers), иначе новичок видит
+// «3 участника» вместо реальных пяти, пока остальные не напишут.
 
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
@@ -28,6 +33,24 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
   matrix.Room get _room => widget.room;
 
   bool _busy = false;
+  bool _loadingMembers = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshMembers();
+  }
+
+  // Полный состав группы с сервера (обходит ленивую загрузку).
+  Future<void> _refreshMembers() async {
+    try {
+      await _room.postLoad();
+    } catch (_) {}
+    try {
+      await _room.requestParticipants();
+    } catch (_) {}
+    if (mounted) setState(() => _loadingMembers = false);
+  }
 
   // Мой уровень прав в комнате. 100 — создатель, 50 — админ/модератор, 0 — обычный.
   int get _myPower => _powerOfId(_room.client.userID ?? '');
@@ -102,6 +125,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
             ? '${user.calcDisplayname()} — теперь администратор'
             : 'Права администратора сняты',
       );
+      await _refreshMembers();
     } catch (e) {
       _snack('Не удалось изменить права: $e');
     } finally {
@@ -135,6 +159,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     try {
       await _room.kick(user.id);
       _snack('$name удалён из группы');
+      await _refreshMembers();
     } catch (e) {
       _snack('Не удалось удалить: $e');
     } finally {
@@ -165,6 +190,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
       }
     }
     _snack(fail == 0 ? 'Приглашено: $ok' : 'Приглашено: $ok, ошибок: $fail');
+    await _refreshMembers();
     if (mounted) setState(() => _busy = false);
   }
 
@@ -212,6 +238,18 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
         title: const Text('О группе'),
         backgroundColor: T.accent,
         foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            tooltip: 'Обновить состав',
+            icon: const Icon(Icons.refresh),
+            onPressed: _loadingMembers
+                ? null
+                : () {
+                    setState(() => _loadingMembers = true);
+                    _refreshMembers();
+                  },
+          ),
+        ],
       ),
       body: Stack(
         children: [
@@ -245,7 +283,9 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            '${members.length} участников',
+                            _loadingMembers
+                                ? 'Загрузка состава…'
+                                : '${members.length} участников',
                             style: const TextStyle(
                               fontSize: 13,
                               color: T.textSec,
@@ -319,7 +359,21 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(color: T.border),
                 ),
-                child: Column(children: members.map(_memberTile).toList()),
+                child: _loadingMembers && members.isEmpty
+                    ? const Padding(
+                        padding: EdgeInsets.symmetric(vertical: 24),
+                        child: Center(
+                          child: SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: T.accent,
+                            ),
+                          ),
+                        ),
+                      )
+                    : Column(children: members.map(_memberTile).toList()),
               ),
 
               // ---- выход ----
@@ -346,7 +400,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
               const SizedBox(height: 24),
             ],
           ),
-          if (_busy)
+          if (_busy || _loadingMembers)
             const Positioned(
               top: 0,
               left: 0,

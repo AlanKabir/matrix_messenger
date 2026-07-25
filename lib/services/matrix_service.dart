@@ -184,7 +184,7 @@ class MatrixService {
     _afterLogin();
   }
 
-  // --- Автоприём приглашений ------------------------------------------------
+  // --- Приём приглашений ----------------------------------------------------
 
   // Вызывается один раз после успешного входа: сразу разбираем «висящие»
   // приглашения и подписываемся на будущие (через onSync).
@@ -193,9 +193,11 @@ class MatrixService {
     _inviteSub ??= client!.onSync.stream.listen((_) => _joinPendingInvites());
   }
 
-  // Принять (join) все комнаты, куда нас пригласили. Важно: join() у SDK сам
-  // проставляет флаг direct chat на нашей стороне, если приглашение было в ЛС.
-  // Именно это чинит «пустую комнату, в которую нельзя писать».
+  // Автоматически принимаем ТОЛЬКО ЛИЧНЫЕ приглашения (is_direct):
+  // личный чат должен просто появиться у собеседника, как в WhatsApp, —
+  // это же чинит «пустую комнату, в которую нельзя писать».
+  // ГРУППОВЫЕ приглашения НЕ принимаем: они показываются в списке чатов
+  // с кнопками «Принять / Отклонить» (workspace_screen).
   Future<void> _joinPendingInvites() async {
     final c = client;
     if (c == null) return;
@@ -204,8 +206,16 @@ class MatrixService {
         .toList();
     for (final room in invited) {
       try {
+        final memberEv = room.getState('m.room.member', c.userID!);
+        final isDirect = memberEv?.content['is_direct'] == true;
+        if (!isDirect) continue; // группа — ждём решения пользователя
         await room.join();
-        debugPrint('Автоматически принято приглашение: ${room.id}');
+        // Сразу дотягиваем участников, чтобы чат не выглядел неполным
+        // до следующей синхронизации.
+        try {
+          await room.requestParticipants();
+        } catch (_) {}
+        debugPrint('Автоматически принято личное приглашение: ${room.id}');
       } catch (e) {
         debugPrint('Не удалось принять приглашение ${room.id}: $e');
       }
