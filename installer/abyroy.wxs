@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  abyroy.wxs - WiX v3 project for ABYROY Chat MSI package.
+
+  IMPORTANT (read once):
+  * UpgradeCode below MUST stay the same forever. It is how Windows
+    understands that a new MSI is an update of the same product.
+  * Product Id="*" generates a new ProductCode on every build - that is
+    correct for major upgrades.
+  * Version must increase with every release: 1.0.0 -> 1.1.0 -> 1.2.0 ...
+    Version is passed from build_msi.bat (-dVersion=...).
+  * Comments and strings here are Latin-only on purpose: MSI tooling and
+    Windows console are sensitive to file encoding.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+
+  <Product Id="*"
+           Name="ABYROY Chat"
+           Language="1049"
+           Codepage="1251"
+           Version="$(var.Version)"
+           Manufacturer="SGO"
+           UpgradeCode="8F3C21A4-6D5B-4E77-9C1E-2B7A5D9E4C10">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Manufacturer="SGO"
+             Description="ABYROY Chat - corporate messenger"
+             Comments="ABYROY Chat installer" />
+
+    <!-- Removes the previous version automatically. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of ABYROY Chat is already installed." />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Icon shown in Programs and Features. -->
+    <Icon Id="AppIcon.exe" SourceFile="$(var.SourceDir)\matrix_messenger.exe" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon.exe" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <Feature Id="MainFeature" Title="ABYROY Chat" Level="1">
+      <!-- AppFiles is generated automatically by heat.exe (see build_msi.bat) -->
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="AppShortcuts" />
+    </Feature>
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="ABYROY Chat" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder" />
+      <Directory Id="DesktopFolder" />
+    </Directory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="AppShortcuts" Guid="C4E9B77D-1A62-4F35-8D0B-6E5F1C3A9B22">
+        <Shortcut Id="StartMenuShortcut"
+                  Directory="ProgramMenuFolder"
+                  Name="ABYROY Chat"
+                  Description="ABYROY Chat"
+                  Target="[INSTALLFOLDER]matrix_messenger.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <Shortcut Id="DesktopShortcut"
+                  Directory="DesktopFolder"
+                  Name="ABYROY Chat"
+                  Description="ABYROY Chat"
+                  Target="[INSTALLFOLDER]matrix_messenger.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKLM"
+                       Key="Software\SGO\ABYROY Chat"
+                       Name="installed"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+  </Product>
+</Wix>

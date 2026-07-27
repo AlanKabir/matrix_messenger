@@ -1,13 +1,14 @@
 // screens/settings_screen.dart — экран «Настройки».
-// Внутри: карточка профиля, «Автозапуск при входе в Windows»,
-// «Устройства и сеансы», «Выйти из аккаунта».
+// Внутри: карточка профиля с ФОТО (можно загрузить своё),
+// «Автозапуск при входе в Windows», «Устройства и сеансы», «Выйти».
+//
+// ФИО здесь НЕ редактируется: имя приходит из Active Directory через SSO,
+// менять его нужно в AD (или временно в админ-панели Synapse).
 //
 // ВАЖНО: пункты «Устройства и сеансы» и «Выйти из аккаунта» сейчас СКРЫТЫ.
 // Управляется одной строкой ниже — showAccountControls.
-//   false → пунктов нет (текущее состояние)
-//   true  → пункты снова появляются
-// Весь код этих пунктов остаётся в файле, удалять ничего не нужно.
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
@@ -24,6 +25,9 @@ import 'sessions_screen.dart';
 bool showAccountControls = false;
 // ─────────────────────────────────────────────────────────────
 
+// Максимальный размер фото для аватара.
+const int _maxAvatarBytes = 5 * 1024 * 1024;
+
 class SettingsScreen extends StatefulWidget {
   final MatrixService service;
   const SettingsScreen({super.key, required this.service});
@@ -35,8 +39,50 @@ class SettingsScreen extends StatefulWidget {
 class _SettingsScreenState extends State<SettingsScreen> {
   matrix.Client get _client => widget.service.client!;
 
+  late Future<matrix.Profile> _profileFuture;
+  bool _busy = false;
+
   // Текущее состояние автозапуска (прочитано из реестра при старте).
   bool _autostart = AutostartService.instance.enabled;
+
+  @override
+  void initState() {
+    super.initState();
+    _profileFuture = _client.fetchOwnProfile();
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  // Загрузка фотографии на аватар: выбор файла → загрузка на сервер →
+  // привязка к профилю. Фото сразу видно всем: в чатах, поиске, группах.
+  Future<void> _pickAvatar() async {
+    final res = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      withData: true,
+      dialogTitle: 'Выберите фотографию',
+    );
+    final f = res?.files.single;
+    if (f == null || f.bytes == null) return;
+    if (f.bytes!.length > _maxAvatarBytes) {
+      _snack('Фото больше 5 МБ — выберите файл поменьше');
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      // setAvatar сам загружает файл и привязывает его к профилю.
+      await _client.setAvatar(matrix.MatrixFile(bytes: f.bytes!, name: f.name));
+      if (!mounted) return;
+      setState(() => _profileFuture = _client.fetchOwnProfile());
+      _snack('Фотография обновлена');
+    } catch (e) {
+      _snack('Не удалось загрузить фото: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
 
   Future<void> _toggleAutostart(bool value) async {
     final result = await AutostartService.instance.setEnabled(value);
@@ -101,85 +147,153 @@ class _SettingsScreenState extends State<SettingsScreen> {
         backgroundColor: T.accent,
         foregroundColor: Colors.white,
       ),
-      body: ListView(
-        padding: const EdgeInsets.symmetric(vertical: 16),
+      body: Stack(
         children: [
-          // --- карточка профиля ---
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 16),
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: T.panelAlt,
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: T.border),
-            ),
-            child: FutureBuilder<matrix.Profile>(
-              future: _client.fetchOwnProfile(),
-              builder: (_, snap) {
-                final name = snap.data?.displayName ?? me;
-                return Row(
-                  children: [
-                    InitialsAvatar(name: name, radius: 28),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Text(
-                        name,
-                        style: const TextStyle(
-                          fontSize: 17,
-                          fontWeight: FontWeight.w600,
-                          color: T.text,
+          ListView(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            children: [
+              // --- карточка профиля с фото ---
+              Container(
+                margin: const EdgeInsets.symmetric(horizontal: 16),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: T.panelAlt,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: T.border),
+                ),
+                child: FutureBuilder<matrix.Profile>(
+                  future: _profileFuture,
+                  builder: (_, snap) {
+                    final name = snap.data?.displayName ?? me;
+                    return Row(
+                      children: [
+                        // Аватар с кнопкой-камерой: клик — выбрать фото.
+                        Stack(
+                          children: [
+                            InitialsAvatar(
+                              name: name,
+                              radius: 34,
+                              mxcUrl: snap.data?.avatarUrl,
+                              client: _client,
+                            ),
+                            Positioned(
+                              right: 0,
+                              bottom: 0,
+                              child: Material(
+                                color: T.gold,
+                                shape: const CircleBorder(),
+                                child: InkWell(
+                                  customBorder: const CircleBorder(),
+                                  onTap: _busy ? null : _pickAvatar,
+                                  child: const Padding(
+                                    padding: EdgeInsets.all(5),
+                                    child: Icon(
+                                      Icons.photo_camera,
+                                      size: 15,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                name,
+                                style: const TextStyle(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w600,
+                                  color: T.text,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              TextButton.icon(
+                                onPressed: _busy ? null : _pickAvatar,
+                                icon: const Icon(
+                                  Icons.image_outlined,
+                                  size: 16,
+                                ),
+                                label: const Text('Изменить фото'),
+                                style: TextButton.styleFrom(
+                                  foregroundColor: T.accent,
+                                  padding: EdgeInsets.zero,
+                                  minimumSize: const Size(0, 28),
+                                  tapTargetSize:
+                                      MaterialTapTargetSize.shrinkWrap,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+
+              // --- автозапуск при входе в Windows ---
+              const SizedBox(height: 22),
+              _group([
+                SwitchListTile(
+                  value: _autostart,
+                  onChanged: _toggleAutostart,
+                  activeThumbColor: T.accent,
+                  secondary: const Icon(
+                    Icons.power_settings_new,
+                    color: T.accent,
+                  ),
+                  title: const Text(
+                    'Запускать при входе в Windows',
+                    style: TextStyle(
+                      color: T.text,
+                      fontWeight: FontWeight.w500,
                     ),
-                  ],
-                );
-              },
-            ),
+                  ),
+                  subtitle: const Text(
+                    'Мессенджер откроется автоматически после включения компьютера',
+                    style: TextStyle(fontSize: 12.5, color: T.textSec),
+                  ),
+                ),
+              ]),
+
+              // --- устройства и сеансы (скрыто через showAccountControls) ---
+              if (showAccountControls) ...[
+                const SizedBox(height: 22),
+                _group([
+                  _tile(
+                    icon: Icons.devices,
+                    label: 'Устройства и сеансы',
+                    onTap: () => _openSessions(context),
+                  ),
+                ]),
+              ],
+
+              // --- выход (скрыто через showAccountControls) ---
+              if (showAccountControls) ...[
+                const SizedBox(height: 22),
+                _group([
+                  _tile(
+                    icon: Icons.logout,
+                    label: 'Выйти из аккаунта',
+                    danger: true,
+                    onTap: () => _confirmLogout(context),
+                  ),
+                ]),
+              ],
+            ],
           ),
-
-          // --- автозапуск при входе в Windows ---
-          const SizedBox(height: 22),
-          _group([
-            SwitchListTile(
-              value: _autostart,
-              onChanged: _toggleAutostart,
-              activeThumbColor: T.accent,
-              secondary: const Icon(Icons.power_settings_new, color: T.accent),
-              title: const Text(
-                'Запускать при входе в Windows',
-                style: TextStyle(color: T.text, fontWeight: FontWeight.w500),
-              ),
-              subtitle: const Text(
-                'Мессенджер откроется автоматически после включения компьютера',
-                style: TextStyle(fontSize: 12.5, color: T.textSec),
-              ),
+          if (_busy)
+            const Positioned(
+              top: 0,
+              left: 0,
+              right: 0,
+              child: LinearProgressIndicator(minHeight: 2, color: T.accent),
             ),
-          ]),
-
-          // --- устройства и сеансы (скрыто через showAccountControls) ---
-          if (showAccountControls) ...[
-            const SizedBox(height: 22),
-            _group([
-              _tile(
-                icon: Icons.devices,
-                label: 'Устройства и сеансы',
-                onTap: () => _openSessions(context),
-              ),
-            ]),
-          ],
-
-          // --- выход (скрыто через showAccountControls) ---
-          if (showAccountControls) ...[
-            const SizedBox(height: 22),
-            _group([
-              _tile(
-                icon: Icons.logout,
-                label: 'Выйти из аккаунта',
-                danger: true,
-                onTap: () => _confirmLogout(context),
-              ),
-            ]),
-          ],
         ],
       ),
     );

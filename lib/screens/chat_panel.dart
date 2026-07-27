@@ -394,15 +394,20 @@ class _ChatPanelState extends State<ChatPanel> {
         (uri) async {
           try {
             if (uri != null) {
-              final f = File(uri.toFilePath());
+              // Путь берём через toFilePath: он сам корректно раскодирует
+              // адрес. Повторное декодирование ломало файлы, в имени
+              // которых есть «%» и другие спецсимволы.
+              final path = uri.toFilePath(windows: Platform.isWindows);
+              final f = File(path);
               final bytes = await f.readAsBytes();
-              final name = uri.pathSegments.isNotEmpty
-                  ? Uri.decodeComponent(uri.pathSegments.last)
-                  : 'file';
+              final name = path.split(RegExp(r'[\\/]')).last;
               if (bytes.isEmpty) {
                 throw Exception('файл пустой или ещё не дописан на диск');
               }
-              final ok = await _composerKey.currentState?.sendFile(bytes, name);
+              final ok = await _composerKey.currentState?.sendFile(
+                bytes,
+                name.isEmpty ? 'file' : name,
+              );
               if (ok == true) sent++;
             }
           } catch (e) {
@@ -528,7 +533,12 @@ class _ChatPanelState extends State<ChatPanel> {
                     ),
                     child: Row(
                       children: [
-                        InitialsAvatar(name: title, group: isGroup),
+                        InitialsAvatar(
+                          name: title,
+                          group: isGroup,
+                          mxcUrl: room.avatar,
+                          client: room.client,
+                        ),
                         const SizedBox(width: 12),
                         Expanded(
                           child: Column(

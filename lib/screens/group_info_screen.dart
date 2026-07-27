@@ -1,6 +1,7 @@
 // screens/group_info_screen.dart — экран «Информация о группе».
 // Возможности:
-//   • список участников с ролями;
+//   • фото и название группы (меняют администраторы);
+//   • список участников с ролями и фотографиями;
 //   • назначить/снять администратора;
 //   • удалить участника из группы;
 //   • переключатель «добавлять участников могут только администраторы»;
@@ -11,15 +12,18 @@
 //
 // ВАЖНО про состав группы: Synapse присылает участников ЛЕНИВО — только тех,
 // кто недавно писал. Поэтому при открытии экрана состав запрашивается
-// с сервера принудительно (_refreshMembers), иначе новичок видит
-// «3 участника» вместо реальных пяти, пока остальные не напишут.
+// с сервера принудительно (_refreshMembers).
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
 import '../app_theme.dart';
 import '../widgets/common.dart';
 import '../widgets/member_picker.dart';
+
+// Максимальный размер фото группы.
+const int _maxAvatarBytes = 5 * 1024 * 1024;
 
 class GroupInfoScreen extends StatefulWidget {
   final matrix.Room room;
@@ -86,6 +90,73 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
   void _snack(String msg) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  // --- Фото группы ----------------------------------------------------------
+
+  Future<void> _pickGroupAvatar() async {
+    final res = await FilePicker.platform.pickFiles(
+      type: FileType.image,
+      withData: true,
+      dialogTitle: 'Фотография группы',
+    );
+    final f = res?.files.single;
+    if (f == null || f.bytes == null) return;
+    if (f.bytes!.length > _maxAvatarBytes) {
+      _snack('Фото больше 5 МБ — выберите файл поменьше');
+      return;
+    }
+    setState(() => _busy = true);
+    try {
+      final uri = await _room.client.uploadContent(f.bytes!, filename: f.name);
+      await _room.client.setRoomStateWithKey(_room.id, 'm.room.avatar', '', {
+        'url': uri.toString(),
+      });
+      _snack('Фотография группы обновлена');
+    } catch (e) {
+      _snack('Не удалось загрузить фото: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  // --- Название группы ------------------------------------------------------
+
+  Future<void> _renameGroup() async {
+    final ctrl = TextEditingController(text: _room.getLocalizedDisplayname());
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Название группы'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Новое название'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: const Text('Сохранить'),
+          ),
+        ],
+      ),
+    );
+    if (newName == null || newName.isEmpty || !mounted) return;
+    setState(() => _busy = true);
+    try {
+      await _room.client.setRoomStateWithKey(_room.id, 'm.room.name', '', {
+        'name': newName,
+      });
+      _snack('Название изменено');
+    } catch (e) {
+      _snack('Не удалось изменить название: $e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
   }
 
   // Переключатель «приглашать могут только админы».
@@ -256,7 +327,7 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
           ListView(
             padding: const EdgeInsets.symmetric(vertical: 16),
             children: [
-              // ---- шапка группы ----
+              // ---- шапка группы: фото + название ----
               Container(
                 margin: const EdgeInsets.symmetric(horizontal: 16),
                 padding: const EdgeInsets.all(16),
@@ -267,19 +338,69 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
                 ),
                 child: Row(
                   children: [
-                    InitialsAvatar(name: title, group: true, radius: 28),
+                    Stack(
+                      children: [
+                        InitialsAvatar(
+                          name: title,
+                          group: true,
+                          radius: 32,
+                          mxcUrl: _room.avatar,
+                          client: _room.client,
+                        ),
+                        // Кнопка смены фото — только для администраторов.
+                        if (_canManage)
+                          Positioned(
+                            right: 0,
+                            bottom: 0,
+                            child: Material(
+                              color: T.gold,
+                              shape: const CircleBorder(),
+                              child: InkWell(
+                                customBorder: const CircleBorder(),
+                                onTap: _busy ? null : _pickGroupAvatar,
+                                child: const Padding(
+                                  padding: EdgeInsets.all(5),
+                                  child: Icon(
+                                    Icons.photo_camera,
+                                    size: 14,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
                     const SizedBox(width: 14),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            title,
-                            style: const TextStyle(
-                              fontSize: 17,
-                              fontWeight: FontWeight.w600,
-                              color: T.text,
-                            ),
+                          Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  title,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 17,
+                                    fontWeight: FontWeight.w600,
+                                    color: T.text,
+                                  ),
+                                ),
+                              ),
+                              if (_canManage)
+                                IconButton(
+                                  tooltip: 'Переименовать группу',
+                                  icon: const Icon(
+                                    Icons.edit,
+                                    size: 18,
+                                    color: T.hint,
+                                  ),
+                                  onPressed: _busy ? null : _renameGroup,
+                                ),
+                            ],
                           ),
                           const SizedBox(height: 2),
                           Text(
@@ -421,7 +542,11 @@ class _GroupInfoScreenState extends State<GroupInfoScreen> {
     final canManageThis = _canManage && !isMe && power < _myPower;
 
     return ListTile(
-      leading: InitialsAvatar(name: name),
+      leading: InitialsAvatar(
+        name: name,
+        mxcUrl: user.avatarUrl,
+        client: _room.client,
+      ),
       title: Text(
         name + (isMe ? ' (вы)' : ''),
         maxLines: 1,

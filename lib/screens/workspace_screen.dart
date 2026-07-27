@@ -800,7 +800,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     return Material(
       color: Colors.transparent,
       child: ListTile(
-        leading: InitialsAvatar(name: title, radius: 20),
+        leading: InitialsAvatar(
+          name: title,
+          radius: 20,
+          mxcUrl: user.avatarUrl,
+          client: _client,
+        ),
         title: Text(
           title,
           maxLines: 1,
@@ -826,7 +831,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         child: ListTile(
           selected: isSelected,
           selectedTileColor: T.selected,
-          leading: InitialsAvatar(name: title, group: !room.isDirectChat),
+          leading: InitialsAvatar(
+            name: title,
+            group: !room.isDirectChat,
+            mxcUrl: room.avatar,
+            client: _client,
+          ),
           title: Text(
             title,
             maxLines: 1,
@@ -889,6 +899,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                 builder: (_, snap) => InitialsAvatar(
                   name: snap.data?.displayName ?? me,
                   radius: 16,
+                  mxcUrl: snap.data?.avatarUrl,
+                  client: _client,
                 ),
               ),
               const SizedBox(width: 10),

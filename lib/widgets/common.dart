@@ -1,5 +1,7 @@
 // widgets/common.dart — галочки, аватары, выбор получателя пересылки.
 
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
@@ -53,16 +55,33 @@ class StatusTicks extends StatelessWidget {
   }
 }
 
+/// Кружок-аватар.
+/// Если передана mxc-ссылка [mxcUrl] и [client] — показывает ФОТОГРАФИЮ.
+/// Если фото нет (или не загрузилось) — инициалы на цветном фоне,
+/// а для групп — иконка группы. Так один виджет обслуживает весь интерфейс.
 class InitialsAvatar extends StatelessWidget {
   final String name;
   final double radius;
   final bool group;
+
+  // Аватар из профиля пользователя (Profile.avatarUrl / User.avatarUrl)
+  // или комнаты (Room.avatar). Формат mxc://…
+  final Uri? mxcUrl;
+  // Клиент нужен, чтобы скачать картинку с сервера (с авторизацией).
+  final matrix.Client? client;
+
   const InitialsAvatar({
     super.key,
     required this.name,
     this.radius = 20,
     this.group = false,
+    this.mxcUrl,
+    this.client,
   });
+
+  // Кэш скачанных аватаров в памяти: ключ — mxc-ссылка.
+  // Без него список чатов перекачивал бы картинки при каждой перерисовке.
+  static final Map<String, Uint8List> _cache = {};
 
   // Стабильный цвет по имени: одинаковое имя всегда одного цвета.
   Color _colorFor(String key) {
@@ -74,8 +93,45 @@ class InitialsAvatar extends StatelessWidget {
     return T.avatarColors[hash % T.avatarColors.length];
   }
 
-  @override
-  Widget build(BuildContext context) {
+  Future<Uint8List?> _loadAvatar(Uri mxc, matrix.Client c) async {
+    final key = mxc.toString();
+    final cached = _cache[key];
+    if (cached != null) return cached;
+
+    // Разбираем mxc://<сервер>/<id> и качаем миниатюру напрямую через
+    // http-клиент SDK (он уже доверяет нашему внутреннему CA).
+    final server = mxc.host;
+    final mediaId = mxc.pathSegments.isNotEmpty ? mxc.pathSegments.last : '';
+    final hs = c.homeserver?.toString().replaceAll(RegExp(r'/+$'), '');
+    if (hs == null || server.isEmpty || mediaId.isEmpty) return null;
+
+    final token = c.accessToken;
+    const params = 'width=128&height=128&method=crop';
+    // Сначала современный (авторизованный) путь, потом старый —
+    // какой поддерживает сервер, тот и сработает.
+    final urls = <String>[
+      '$hs/_matrix/client/v1/media/thumbnail/$server/$mediaId?$params',
+      '$hs/_matrix/media/v3/thumbnail/$server/$mediaId?$params',
+    ];
+    for (final u in urls) {
+      try {
+        final resp = await c.httpClient.get(
+          Uri.parse(u),
+          headers: token != null ? {'Authorization': 'Bearer $token'} : null,
+        );
+        if (resp.statusCode == 200 && resp.bodyBytes.isNotEmpty) {
+          _cache[key] = resp.bodyBytes;
+          return resp.bodyBytes;
+        }
+      } catch (_) {
+        // пробуем следующий адрес
+      }
+    }
+    return null;
+  }
+
+  // Кружок без фото: иконка группы или инициалы.
+  Widget _fallback() {
     if (group) {
       return CircleAvatar(
         radius: radius,
@@ -97,6 +153,25 @@ class InitialsAvatar extends StatelessWidget {
         initials.isEmpty ? '?' : initials,
         style: TextStyle(color: Colors.white, fontSize: radius * 0.7),
       ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mxc = mxcUrl;
+    final c = client;
+    if (mxc == null || c == null) return _fallback();
+    return FutureBuilder<Uint8List?>(
+      future: _loadAvatar(mxc, c),
+      builder: (context, snap) {
+        final bytes = snap.data;
+        if (bytes == null || bytes.isEmpty) return _fallback();
+        return CircleAvatar(
+          radius: radius,
+          backgroundColor: _colorFor(name),
+          backgroundImage: MemoryImage(bytes),
+        );
+      },
     );
   }
 }
@@ -169,6 +244,8 @@ Future<matrix.Room?> showForwardPicker(
                             name: r.getLocalizedDisplayname(),
                             radius: 16,
                             group: !r.isDirectChat,
+                            mxcUrl: r.avatar,
+                            client: client,
                           ),
                           title: Text(r.getLocalizedDisplayname()),
                           onTap: () => Navigator.of(ctx).pop(r),
@@ -187,12 +264,11 @@ Future<matrix.Room?> showForwardPicker(
                           leading: InitialsAvatar(
                             name: u.displayName ?? u.userId,
                             radius: 16,
+                            mxcUrl: u.avatarUrl,
+                            client: client,
                           ),
+                          // Matrix ID пользователю не показываем — только ФИО.
                           title: Text(u.displayName ?? u.userId),
-                          subtitle: Text(
-                            u.userId,
-                            style: const TextStyle(fontSize: 11),
-                          ),
                           onTap: () async {
                             final roomId = await client.startDirectChat(
                               u.userId,
