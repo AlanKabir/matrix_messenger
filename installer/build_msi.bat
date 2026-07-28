@@ -14,7 +14,7 @@ rem  NOTE: no parenthesis blocks here on purpose - WiX path contains
 rem  "(x86)" and brackets break batch IF-blocks.
 rem ===================================================================
 
-set VERSION=1.0.1
+set VERSION=1.1.0
 
 rem Path to WiX Toolset v3 binaries (change if installed elsewhere)
 set "WIX_BIN=C:\Program Files (x86)\WiX Toolset v3.14\bin"

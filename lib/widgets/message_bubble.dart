@@ -389,6 +389,148 @@ class MessageBubble extends StatelessWidget {
     await _toggleReaction(context, chosen);
   }
 
+  // «Данные о прочтении» — как в WhatsApp: кто прочитал моё сообщение,
+  // а до кого оно ещё не дошло. Считаем по отметкам прочтения комнаты:
+  // прочитал = его отметка стоит на этом сообщении или позже.
+  void _showReadReceipts(BuildContext context) {
+    final me = room.client.userID;
+    final ts = event.originServerTs.millisecondsSinceEpoch;
+
+    Map<String, dynamic> receipts = {};
+    try {
+      receipts = Map<String, dynamic>.from(room.receiptState.global.otherUsers);
+    } catch (_) {}
+
+    final participants = room
+        .getParticipants()
+        .where((u) => u.id != me && u.membership == matrix.Membership.join)
+        .toList();
+
+    final read = <MapEntry<matrix.User, DateTime>>[];
+    final unread = <matrix.User>[];
+    for (final u in participants) {
+      final r = receipts[u.id];
+      DateTime? when;
+      try {
+        if (r != null && r.timestamp.millisecondsSinceEpoch >= ts) {
+          when = r.timestamp;
+        }
+      } catch (_) {}
+      if (when != null) {
+        read.add(MapEntry(u, when));
+      } else {
+        unread.add(u);
+      }
+    }
+    read.sort((a, b) => a.value.compareTo(b.value));
+
+    String two(int v) => v.toString().padLeft(2, '0');
+    String fmt(DateTime d) =>
+        '${two(d.day)}.${two(d.month)} ${two(d.hour)}:${two(d.minute)}';
+
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Данные о прочтении'),
+        content: SizedBox(
+          width: 360,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.done_all, size: 18, color: T.tickRead),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Прочитали (${read.length})',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13.5,
+                        color: T.steel,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (read.isEmpty)
+                const Padding(
+                  padding: EdgeInsets.fromLTRB(30, 0, 4, 8),
+                  child: Text(
+                    'Пока никто',
+                    style: TextStyle(fontSize: 13, color: T.hint),
+                  ),
+                ),
+              for (final e in read)
+                ListTile(
+                  dense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                  leading: InitialsAvatar(
+                    name: e.key.calcDisplayname(),
+                    radius: 15,
+                    mxcUrl: e.key.avatarUrl,
+                    client: room.client,
+                  ),
+                  title: Text(
+                    e.key.calcDisplayname(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13.5),
+                  ),
+                  trailing: Text(
+                    fmt(e.value),
+                    style: const TextStyle(fontSize: 11.5, color: T.hint),
+                  ),
+                ),
+              const Divider(height: 16),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(4, 0, 4, 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.check, size: 18, color: T.hint),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Не прочитали (${unread.length})',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 13.5,
+                        color: T.steel,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              for (final u in unread)
+                ListTile(
+                  dense: true,
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                  leading: InitialsAvatar(
+                    name: u.calcDisplayname(),
+                    radius: 15,
+                    mxcUrl: u.avatarUrl,
+                    client: room.client,
+                  ),
+                  title: Text(
+                    u.calcDisplayname(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontSize: 13.5),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Закрыть'),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final ts = event.originServerTs;
@@ -563,6 +705,15 @@ class MessageBubble extends StatelessWidget {
       items.add(
         const PopupMenuItem(value: 'forward', child: Text('Переслать...')),
       );
+      // Кто прочитал моё сообщение — только для групп.
+      if (isOwn && !room.isDirectChat) {
+        items.add(
+          const PopupMenuItem(
+            value: 'receipts',
+            child: Text('Данные о прочтении'),
+          ),
+        );
+      }
       // Своё успешно отправленное сообщение можно удалить у всех участников.
       if (isOwn) {
         items.add(
@@ -597,6 +748,9 @@ class MessageBubble extends StatelessWidget {
         break;
       case 'forward':
         onForward();
+        break;
+      case 'receipts':
+        _showReadReceipts(context);
         break;
       case 'retry':
         await event.sendAgain();

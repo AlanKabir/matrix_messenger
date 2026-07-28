@@ -638,6 +638,39 @@ class _ChatPanelState extends State<ChatPanel> {
   }
 
   // ---------------------------------------------------------------------------
+  // Разделители дат (как в WhatsApp: «Сегодня», «Вчера», дата).
+
+  bool _sameDay(DateTime a, DateTime b) =>
+      a.year == b.year && a.month == b.month && a.day == b.day;
+
+  String _dateLabel(DateTime ts) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(ts.year, ts.month, ts.day);
+    final diff = today.difference(day).inDays;
+    if (diff == 0) return 'Сегодня';
+    if (diff == 1) return 'Вчера';
+    const months = [
+      'января',
+      'февраля',
+      'марта',
+      'апреля',
+      'мая',
+      'июня',
+      'июля',
+      'августа',
+      'сентября',
+      'октября',
+      'ноября',
+      'декабря',
+    ];
+    final sameYear = ts.year == now.year;
+    return sameYear
+        ? '${ts.day} ${months[ts.month - 1]}'
+        : '${ts.day} ${months[ts.month - 1]} ${ts.year} г.';
+  }
+
+  // ---------------------------------------------------------------------------
   // Служебные события группы (как в WhatsApp): вошёл/вышел/пригласил/права.
 
   bool _isSystemEvent(matrix.Event e) {
@@ -888,27 +921,49 @@ class _ChatPanelState extends State<ChatPanel> {
                         itemCount: events.length,
                         itemBuilder: (context, index) {
                           final event = events[index];
+                          // Разделитель даты: лента перевёрнута, поэтому дата
+                          // ставится над самым РАННИМ сообщением дня —
+                          // сравниваем с предыдущим по времени (index + 1).
+                          final showDate =
+                              index == events.length - 1 ||
+                              !_sameDay(
+                                events[index].originServerTs,
+                                events[index + 1].originServerTs,
+                              );
+                          Widget content;
                           // Служебное событие — маленькая надпись по центру.
                           if (_isSystemEvent(event)) {
-                            return _SystemNotice(text: _systemText(event));
+                            content = _SystemNotice(text: _systemText(event));
+                          } else {
+                            final isOwn =
+                                event.senderId == widget.room.client.userID;
+                            content = MessageBubble(
+                              event: event,
+                              room: room,
+                              timeline: timeline,
+                              isOwn: isOwn,
+                              showAuthor: isGroup && !isOwn,
+                              senderName: _senderName(event),
+                              highlighted: event.eventId == _highlightId,
+                              onForward: () => _forward(event),
+                              onReply: () =>
+                                  _composerKey.currentState?.startReply(event),
+                              onEdit: (currentText) => _composerKey.currentState
+                                  ?.startEdit(event, currentText),
+                              onJumpTo: _jumpTo,
+                            );
                           }
-                          final isOwn =
-                              event.senderId == widget.room.client.userID;
-                          return MessageBubble(
-                            event: event,
-                            room: room,
-                            timeline: timeline,
-                            isOwn: isOwn,
-                            showAuthor: isGroup && !isOwn,
-                            senderName: _senderName(event),
-                            highlighted: event.eventId == _highlightId,
-                            onForward: () => _forward(event),
-                            onReply: () =>
-                                _composerKey.currentState?.startReply(event),
-                            onEdit: (currentText) => _composerKey.currentState
-                                ?.startEdit(event, currentText),
-                            onJumpTo: _jumpTo,
-                          );
+                          if (showDate) {
+                            return Column(
+                              children: [
+                                _DateChip(
+                                  label: _dateLabel(event.originServerTs),
+                                ),
+                                content,
+                              ],
+                            );
+                          }
+                          return content;
                         },
                       );
                     },
@@ -1068,6 +1123,43 @@ class _ChatPanelState extends State<ChatPanel> {
             ),
           const SizedBox(height: 4),
         ],
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Плашка даты в ленте («Сегодня», «Вчера», «21 июля») — как в WhatsApp.
+class _DateChip extends StatelessWidget {
+  final String label;
+  const _DateChip({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: T.border),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x0F000000),
+              blurRadius: 2,
+              offset: Offset(0, 1),
+            ),
+          ],
+        ),
+        child: Text(
+          label,
+          style: const TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: T.steel,
+          ),
+        ),
       ),
     );
   }

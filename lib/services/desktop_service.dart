@@ -1,7 +1,7 @@
-// services/desktop_service.dart — интеграция с рабочим столом Windows:
-// сворачивание в трей (крестик прячет окно, а не закрывает приложение),
-// иконка в системном трее с меню, и всплывающие уведомления о новых
-// сообщениях, когда окно скрыто или не в фокусе.
+// services/desktop_service.dart — трей, уведомления, поведение окна.
+// Крестик прячет окно в трей; выход — только через меню трея.
+// Новые сообщения показываются системным уведомлением СО ЗВУКОМ,
+// когда окно скрыто или не в фокусе.
 
 import 'dart:async';
 
@@ -9,6 +9,8 @@ import 'package:local_notifier/local_notifier.dart';
 import 'package:matrix/matrix.dart' as matrix;
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
+
+import 'notification_sound.dart';
 
 class DesktopService with WindowListener, TrayListener {
   DesktopService._();
@@ -32,7 +34,7 @@ class DesktopService with WindowListener, TrayListener {
     // Иконка в трее + контекстное меню.
     try {
       await trayManager.setIcon(_trayIcon);
-      await trayManager.setToolTip('Мессенджер SGO');
+      await trayManager.setToolTip('ABYROY Chat');
       await trayManager.setContextMenu(
         Menu(
           items: [
@@ -81,6 +83,9 @@ class DesktopService with WindowListener, TrayListener {
     final body = event.body.isNotEmpty ? event.body : 'Новое сообщение';
 
     try {
+      // Звук — тем же стандартным сигналом Windows, что и системные
+      // уведомления (не чаще раза в 2 секунды, защита в самом модуле).
+      NotificationSound.play();
       final notif = LocalNotification(title: title, body: body);
       notif.onClick = _showWindow;
       await notif.show();
