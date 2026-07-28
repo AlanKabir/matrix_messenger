@@ -30,7 +30,16 @@ class ChatPanel extends StatefulWidget {
   final matrix.Room room;
   final MatrixService service;
 
-  const ChatPanel({super.key, required this.room, required this.service});
+  // Вызывается, когда пользователь отклонил приглашение или вышел —
+  // рабочая область снимает выбор чата.
+  final VoidCallback? onRoomLeft;
+
+  const ChatPanel({
+    super.key,
+    required this.room,
+    required this.service,
+    this.onRoomLeft,
+  });
 
   @override
   State<ChatPanel> createState() => _ChatPanelState();
@@ -69,7 +78,18 @@ class _ChatPanelState extends State<ChatPanel> {
   bool _markingRead = false;
 
   void _loadTimeline() {
+    // Отписываемся от предыдущего чата: иначе его обработчик продолжает
+    // работать в фоне и помечает прочитанными сообщения, которые
+    // пользователь не открывал (счётчик появлялся и сразу гас).
+    try {
+      _timeline?.cancelSubscriptions();
+    } catch (_) {}
     _timeline = null;
+    // У приглашения истории нет — таймлайн запрашиваем только после вступления.
+    if (widget.room.membership == matrix.Membership.invite) {
+      _timelineFuture = Future.error('invite');
+      return;
+    }
     _timelineFuture = widget.room.getTimeline(
       onUpdate: () {
         if (mounted) setState(() {});
@@ -88,9 +108,160 @@ class _ChatPanelState extends State<ChatPanel> {
     _refreshParticipants();
   }
 
-  // Ставит отметку «прочитано» — только когда есть что сбрасывать,
-  // чтобы не дёргать сервер лишними запросами.
+  // --- приглашение в группу (решение принимается внутри чата) ---
+
+  bool _inviteBusy = false;
+
+  Future<void> _acceptInvite() async {
+    setState(() => _inviteBusy = true);
+    try {
+      await widget.room.join();
+      try {
+        await widget.room.postLoad();
+      } catch (_) {}
+      try {
+        await widget.room.requestParticipants();
+      } catch (_) {}
+      if (!mounted) return;
+      setState(() => _inviteBusy = false);
+      _loadTimeline();
+      setState(() {});
+    } catch (e) {
+      if (mounted) {
+        setState(() => _inviteBusy = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось вступить в группу: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _declineInvite() async {
+    setState(() => _inviteBusy = true);
+    try {
+      await widget.room.leave();
+      widget.onRoomLeft?.call();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _inviteBusy = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Не удалось отклонить приглашение: $e')),
+        );
+      }
+    }
+  }
+
+  // Экран приглашения вместо ленты и поля ввода.
+  Widget _inviteView() {
+    final title = widget.room.getLocalizedDisplayname();
+    String? invitedBy;
+    try {
+      final me = widget.room.client.userID;
+      final ev = me == null ? null : widget.room.getState('m.room.member', me);
+      if (ev != null) {
+        invitedBy = widget.room
+            .unsafeGetUserFromMemoryOrFallback(ev.senderId)
+            .calcDisplayname();
+      }
+    } catch (_) {}
+
+    return Container(
+      color: T.feedBg,
+      child: Center(
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 420),
+          margin: const EdgeInsets.all(24),
+          padding: const EdgeInsets.fromLTRB(28, 28, 28, 20),
+          decoration: BoxDecoration(
+            color: T.panelAlt,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: T.border),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x14000000),
+                blurRadius: 8,
+                offset: Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              InitialsAvatar(
+                name: title,
+                group: true,
+                radius: 34,
+                mxcUrl: widget.room.avatar,
+                client: widget.room.client,
+              ),
+              const SizedBox(height: 14),
+              Text(
+                title,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w600,
+                  color: T.text,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                invitedBy != null && invitedBy.isNotEmpty
+                    ? '$invitedBy приглашает вас в группу'
+                    : 'Вас пригласили в группу',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 13.5, color: T.textSec),
+              ),
+              const SizedBox(height: 6),
+              const Text(
+                'Переписка станет доступна после вступления.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 12.5, color: T.hint),
+              ),
+              const SizedBox(height: 20),
+              if (_inviteBusy)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: CircularProgressIndicator(color: T.accent),
+                )
+              else
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: _declineInvite,
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.redAccent,
+                          side: const BorderSide(color: Colors.redAccent),
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        child: const Text('Отклонить'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: _acceptInvite,
+                        style: FilledButton.styleFrom(
+                          backgroundColor: T.accent,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                        child: const Text('Принять'),
+                      ),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Ставит отметку «прочитано» — только когда экран жив и есть что сбрасывать,
+  // чтобы не дёргать сервер лишними запросами и не гасить чужие счётчики.
   void _markRead() {
+    if (!mounted) return;
     if (_markingRead) return;
     if (widget.room.notificationCount == 0) return;
     final tl = _timeline;
@@ -134,6 +305,11 @@ class _ChatPanelState extends State<ChatPanel> {
 
   @override
   void dispose() {
+    // Обязательно отключаем таймлайн, иначе его обработчик живёт после
+    // закрытия панели и продолжает помечать сообщения прочитанными.
+    try {
+      _timeline?.cancelSubscriptions();
+    } catch (_) {}
     _highlightTimer?.cancel();
     _searchCtrl.dispose();
     super.dispose();
@@ -509,6 +685,7 @@ class _ChatPanelState extends State<ChatPanel> {
     final room = widget.room;
     final title = room.getLocalizedDisplayname();
     final isGroup = !room.isDirectChat;
+    final isInvite = room.membership == matrix.Membership.invite;
 
     return Column(
       children: [
@@ -598,194 +775,198 @@ class _ChatPanelState extends State<ChatPanel> {
           ),
         ),
         const Divider(height: 1, color: T.border),
+        // ------ приглашение: решение принимается прямо здесь ------
+        if (isInvite) Expanded(child: _inviteView()),
         // ------ строка поиска по чату ------
-        if (_searchOpen)
-          Container(
-            color: T.panelAlt,
-            padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
-            child: TextField(
-              controller: _searchCtrl,
-              autofocus: true,
-              decoration: InputDecoration(
-                hintText: 'Поиск в этом чате…',
-                hintStyle: const TextStyle(color: T.hint, fontSize: 14),
-                prefixIcon: const Icon(Icons.search, size: 20, color: T.hint),
-                suffixIcon: _searchQuery.isNotEmpty
-                    ? IconButton(
-                        icon: const Icon(Icons.close, size: 16),
-                        onPressed: _searchCtrl.clear,
-                      )
-                    : null,
-                isDense: true,
-                filled: true,
-                fillColor: const Color(0xFFE6EBF3),
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(10),
-                  borderSide: BorderSide.none,
+        if (!isInvite)
+          if (_searchOpen)
+            Container(
+              color: T.panelAlt,
+              padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+              child: TextField(
+                controller: _searchCtrl,
+                autofocus: true,
+                decoration: InputDecoration(
+                  hintText: 'Поиск в этом чате…',
+                  hintStyle: const TextStyle(color: T.hint, fontSize: 14),
+                  prefixIcon: const Icon(Icons.search, size: 20, color: T.hint),
+                  suffixIcon: _searchQuery.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.close, size: 16),
+                          onPressed: _searchCtrl.clear,
+                        )
+                      : null,
+                  isDense: true,
+                  filled: true,
+                  fillColor: const Color(0xFFE6EBF3),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide.none,
+                  ),
                 ),
               ),
             ),
-          ),
         // ------ планка закреплённых ------
-        _pinnedBar(),
+        if (!isInvite) _pinnedBar(),
         // ------ лента (с зоной приёма перетащенных файлов) ------
-        Expanded(
-          child: DropRegion(
-            formats: const [Formats.fileUri],
-            hitTestBehavior: HitTestBehavior.opaque,
-            onDropOver: (event) {
-              // Принимаем копирование файлов из Проводника.
-              if (event.session.allowedOperations.contains(
-                DropOperation.copy,
-              )) {
-                return DropOperation.copy;
-              }
-              return DropOperation.none;
-            },
-            onDropEnter: (_) => setState(() => _dragging = true),
-            onDropLeave: (_) => setState(() => _dragging = false),
-            onPerformDrop: (event) async {
-              setState(() => _dragging = false);
-              await _onPerformDrop(event);
-            },
-            child: Stack(
-              children: [
-                // Фон ленты.
-                Positioned.fill(child: Container(color: T.feedBg)),
-                // Водяной знак-герб.
-                const Positioned.fill(child: _ChatWatermark()),
-                // Лента сообщений.
-                FutureBuilder<matrix.Timeline>(
-                  future: _timelineFuture,
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) {
-                      return const Center(
-                        child: CircularProgressIndicator(color: T.accent),
-                      );
-                    }
-                    if (!snapshot.hasData || snapshot.hasError) {
-                      return const Center(
-                        child: Text(
-                          'Ошибка загрузки сообщений',
-                          style: TextStyle(color: Colors.redAccent),
-                        ),
-                      );
-                    }
-                    final timeline = snapshot.data!;
-                    final clearedTs = widget.service.clearedTsFor(room.id);
-                    final events = timeline.events.where((e) {
-                      final afterClear =
-                          clearedTs == null ||
-                          e.originServerTs.millisecondsSinceEpoch > clearedTs;
-                      if (!afterClear) return false;
-                      final isMsg =
-                          (e.relationshipEventId == null ||
-                              e.relationshipType == 'm.in_reply_to') &&
-                          !e.redacted &&
-                          (e.type == 'm.room.message' ||
-                              e.type == 'm.room.encrypted');
-                      // Служебные надписи (вошёл/вышел/права) — только в группах.
-                      final isSystem = isGroup && _isSystemEvent(e);
-                      return isMsg || isSystem;
-                    }).toList();
-                    _lastEvents = events;
-                    if (events.isEmpty) {
-                      return const Center(
-                        child: Text(
-                          'Нет сообщений. Напишите первое.',
-                          style: TextStyle(color: T.hint),
-                        ),
-                      );
-                    }
-                    return ScrollablePositionedList.builder(
-                      reverse: true,
-                      itemScrollController: _itemScroll,
-                      padding: const EdgeInsets.symmetric(
-                        vertical: 14,
-                        horizontal: 40,
-                      ),
-                      itemCount: events.length,
-                      itemBuilder: (context, index) {
-                        final event = events[index];
-                        // Служебное событие — маленькая надпись по центру.
-                        if (_isSystemEvent(event)) {
-                          return _SystemNotice(text: _systemText(event));
-                        }
-                        final isOwn =
-                            event.senderId == widget.room.client.userID;
-                        return MessageBubble(
-                          event: event,
-                          room: room,
-                          timeline: timeline,
-                          isOwn: isOwn,
-                          showAuthor: isGroup && !isOwn,
-                          senderName: _senderName(event),
-                          highlighted: event.eventId == _highlightId,
-                          onForward: () => _forward(event),
-                          onReply: () =>
-                              _composerKey.currentState?.startReply(event),
-                          onEdit: (currentText) => _composerKey.currentState
-                              ?.startEdit(event, currentText),
-                          onJumpTo: _jumpTo,
+        if (!isInvite)
+          Expanded(
+            child: DropRegion(
+              formats: const [Formats.fileUri],
+              hitTestBehavior: HitTestBehavior.opaque,
+              onDropOver: (event) {
+                // Принимаем копирование файлов из Проводника.
+                if (event.session.allowedOperations.contains(
+                  DropOperation.copy,
+                )) {
+                  return DropOperation.copy;
+                }
+                return DropOperation.none;
+              },
+              onDropEnter: (_) => setState(() => _dragging = true),
+              onDropLeave: (_) => setState(() => _dragging = false),
+              onPerformDrop: (event) async {
+                setState(() => _dragging = false);
+                await _onPerformDrop(event);
+              },
+              child: Stack(
+                children: [
+                  // Фон ленты.
+                  Positioned.fill(child: Container(color: T.feedBg)),
+                  // Водяной знак-герб.
+                  const Positioned.fill(child: _ChatWatermark()),
+                  // Лента сообщений.
+                  FutureBuilder<matrix.Timeline>(
+                    future: _timelineFuture,
+                    builder: (context, snapshot) {
+                      if (snapshot.connectionState == ConnectionState.waiting) {
+                        return const Center(
+                          child: CircularProgressIndicator(color: T.accent),
                         );
-                      },
-                    );
-                  },
-                ),
-
-                // Результаты поиска по чату (поверх ленты).
-                if (_searchOpen && _searchQuery.length >= 2)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    top: 0,
-                    child: _searchResultsPanel(),
+                      }
+                      if (!snapshot.hasData || snapshot.hasError) {
+                        return const Center(
+                          child: Text(
+                            'Ошибка загрузки сообщений',
+                            style: TextStyle(color: Colors.redAccent),
+                          ),
+                        );
+                      }
+                      final timeline = snapshot.data!;
+                      final clearedTs = widget.service.clearedTsFor(room.id);
+                      final events = timeline.events.where((e) {
+                        final afterClear =
+                            clearedTs == null ||
+                            e.originServerTs.millisecondsSinceEpoch > clearedTs;
+                        if (!afterClear) return false;
+                        final isMsg =
+                            (e.relationshipEventId == null ||
+                                e.relationshipType == 'm.in_reply_to') &&
+                            !e.redacted &&
+                            (e.type == 'm.room.message' ||
+                                e.type == 'm.room.encrypted');
+                        // Служебные надписи (вошёл/вышел/права) — только в группах.
+                        final isSystem = isGroup && _isSystemEvent(e);
+                        return isMsg || isSystem;
+                      }).toList();
+                      _lastEvents = events;
+                      if (events.isEmpty) {
+                        return const Center(
+                          child: Text(
+                            'Нет сообщений. Напишите первое.',
+                            style: TextStyle(color: T.hint),
+                          ),
+                        );
+                      }
+                      return ScrollablePositionedList.builder(
+                        reverse: true,
+                        itemScrollController: _itemScroll,
+                        padding: const EdgeInsets.symmetric(
+                          vertical: 14,
+                          horizontal: 40,
+                        ),
+                        itemCount: events.length,
+                        itemBuilder: (context, index) {
+                          final event = events[index];
+                          // Служебное событие — маленькая надпись по центру.
+                          if (_isSystemEvent(event)) {
+                            return _SystemNotice(text: _systemText(event));
+                          }
+                          final isOwn =
+                              event.senderId == widget.room.client.userID;
+                          return MessageBubble(
+                            event: event,
+                            room: room,
+                            timeline: timeline,
+                            isOwn: isOwn,
+                            showAuthor: isGroup && !isOwn,
+                            senderName: _senderName(event),
+                            highlighted: event.eventId == _highlightId,
+                            onForward: () => _forward(event),
+                            onReply: () =>
+                                _composerKey.currentState?.startReply(event),
+                            onEdit: (currentText) => _composerKey.currentState
+                                ?.startEdit(event, currentText),
+                            onJumpTo: _jumpTo,
+                          );
+                        },
+                      );
+                    },
                   ),
 
-                // Подсветка-подсказка, когда над чатом «висит» файл.
-                if (_dragging)
-                  Positioned.fill(
-                    child: Container(
-                      color: T.accent.withValues(alpha: 0.08),
-                      alignment: Alignment.center,
+                  // Результаты поиска по чату (поверх ленты).
+                  if (_searchOpen && _searchQuery.length >= 2)
+                    Positioned(
+                      left: 0,
+                      right: 0,
+                      top: 0,
+                      child: _searchResultsPanel(),
+                    ),
+
+                  // Подсветка-подсказка, когда над чатом «висит» файл.
+                  if (_dragging)
+                    Positioned.fill(
                       child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 24,
-                          vertical: 18,
-                        ),
-                        decoration: BoxDecoration(
-                          color: T.panelAlt,
-                          borderRadius: BorderRadius.circular(16),
-                          border: Border.all(color: T.accent, width: 2),
-                        ),
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: const [
-                            Icon(
-                              Icons.file_download_outlined,
-                              size: 40,
-                              color: T.accent,
-                            ),
-                            SizedBox(height: 8),
-                            Text(
-                              'Отпустите файл, чтобы отправить',
-                              style: TextStyle(
+                        color: T.accent.withValues(alpha: 0.08),
+                        alignment: Alignment.center,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 24,
+                            vertical: 18,
+                          ),
+                          decoration: BoxDecoration(
+                            color: T.panelAlt,
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: T.accent, width: 2),
+                          ),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: const [
+                              Icon(
+                                Icons.file_download_outlined,
+                                size: 40,
                                 color: T.accent,
-                                fontWeight: FontWeight.w600,
-                                fontSize: 14,
                               ),
-                            ),
-                          ],
+                              SizedBox(height: 8),
+                              Text(
+                                'Отпустите файл, чтобы отправить',
+                                style: TextStyle(
+                                  color: T.accent,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
-                  ),
-              ],
+                ],
+              ),
             ),
           ),
-        ),
         // ------ композер (плашки ответа/редактирования внутри) ------
-        MessageComposer(key: _composerKey, room: room),
+        if (!isInvite) MessageComposer(key: _composerKey, room: room),
       ],
     );
   }

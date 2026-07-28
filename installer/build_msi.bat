@@ -14,7 +14,7 @@ rem  NOTE: no parenthesis blocks here on purpose - WiX path contains
 rem  "(x86)" and brackets break batch IF-blocks.
 rem ===================================================================
 
-set VERSION=1.0.0
+set VERSION=1.0.1
 
 rem Path to WiX Toolset v3 binaries (change if installed elsewhere)
 set "WIX_BIN=C:\Program Files (x86)\WiX Toolset v3.14\bin"
@@ -29,6 +29,11 @@ echo [1/3] Harvesting files...
 "%WIX_BIN%\heat.exe" dir "%SRC%" -cg AppFiles -gg -scom -sreg -sfrag -srd -dr INSTALLFOLDER -var var.SourceDir -out AppFiles.wxs
 if errorlevel 1 goto :failed
 
+rem NOTE about -arch: package must keep the SAME architecture as the
+rem previously deployed version, otherwise Windows Installer does not see
+rem the old product and installs a SECOND copy side by side.
+rem Version 1.0.0 was built without -arch (x86), so we keep it that way.
+rem To move to x64 later: uninstall the old version first, then add -arch x64.
 echo [2/3] Compiling...
 "%WIX_BIN%\candle.exe" -dVersion=%VERSION% -dSourceDir="%SRC%" abyroy.wxs AppFiles.wxs
 if errorlevel 1 goto :failed

@@ -231,6 +231,164 @@ class MessageBubble extends StatelessWidget {
     );
   }
 
+  // ─── Реакции (m.reaction) ──────────────────────────────────────────────
+
+  // Карта «эмодзи → список событий-реакций».
+  Map<String, List<matrix.Event>> _reactions() {
+    final map = <String, List<matrix.Event>>{};
+    try {
+      final aggregated = event.aggregatedEvents(timeline, 'm.annotation');
+      for (final e in aggregated) {
+        if (e.redacted) continue;
+        final rel = e.content['m.relates_to'];
+        if (rel is Map) {
+          final key = rel['key'];
+          if (key is String && key.isNotEmpty) {
+            map.putIfAbsent(key, () => []).add(e);
+          }
+        }
+      }
+    } catch (_) {}
+    return map;
+  }
+
+  // Поставить/снять свою реакцию.
+  Future<void> _toggleReaction(BuildContext context, String emoji) async {
+    final me = room.client.userID;
+    final mine = _reactions()[emoji]?.where((e) => e.senderId == me).toList();
+    try {
+      if (mine != null && mine.isNotEmpty) {
+        await mine.first.redactEvent();
+      } else {
+        await room.sendReaction(event.eventId, emoji);
+      }
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Не удалось поставить реакцию: $e')),
+      );
+    }
+  }
+
+  // Кто поставил реакции — список по эмодзи.
+  void _showWhoReacted(BuildContext context) {
+    final map = _reactions();
+    if (map.isEmpty) return;
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Реакции'),
+        content: SizedBox(
+          width: 320,
+          child: ListView(
+            shrinkWrap: true,
+            children: [
+              for (final entry in map.entries)
+                for (final r in entry.value)
+                  ListTile(
+                    dense: true,
+                    leading: Text(
+                      entry.key,
+                      style: const TextStyle(fontSize: 20),
+                    ),
+                    title: Text(
+                      room
+                          .unsafeGetUserFromMemoryOrFallback(r.senderId)
+                          .calcDisplayname(),
+                      style: const TextStyle(fontSize: 14),
+                    ),
+                  ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Закрыть'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Полоска реакций под текстом сообщения.
+  Widget _reactionsBar(BuildContext context) {
+    final map = _reactions();
+    if (map.isEmpty) return const SizedBox.shrink();
+    final me = room.client.userID;
+    return Padding(
+      padding: const EdgeInsets.only(top: 5),
+      child: Wrap(
+        spacing: 4,
+        runSpacing: 4,
+        children: map.entries.map((e) {
+          final mineReacted = e.value.any((r) => r.senderId == me);
+          return InkWell(
+            borderRadius: BorderRadius.circular(12),
+            onTap: () => _toggleReaction(context, e.key),
+            onLongPress: () => _showWhoReacted(context),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: isOwn
+                    ? Colors.white.withValues(alpha: mineReacted ? 0.30 : 0.16)
+                    : (mineReacted ? T.selected : const Color(0xFFEFF3F8)),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: mineReacted
+                      ? (isOwn ? Colors.white70 : T.accent)
+                      : Colors.transparent,
+                ),
+              ),
+              child: Text(
+                e.value.length > 1 ? '${e.key} ${e.value.length}' : e.key,
+                style: TextStyle(
+                  fontSize: 12.5,
+                  color: isOwn ? Colors.white : T.text,
+                ),
+              ),
+            ),
+          );
+        }).toList(),
+      ),
+    );
+  }
+
+  // Выбор эмодзи для реакции.
+  Future<void> _pickReaction(BuildContext context) async {
+    const emojis = ['👍', '❤️', '😂', '😮', '😢', '🙏', '✅', '🔥'];
+    final chosen = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Реакция'),
+        content: Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: emojis
+              .map(
+                (e) => InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => Navigator.pop(ctx, e),
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Text(e, style: const TextStyle(fontSize: 26)),
+                  ),
+                ),
+              )
+              .toList(),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Отмена'),
+          ),
+        ],
+      ),
+    );
+    if (chosen == null || !context.mounted) return;
+    await _toggleReaction(context, chosen);
+  }
+
   @override
   Widget build(BuildContext context) {
     final ts = event.originServerTs;
@@ -337,6 +495,7 @@ class MessageBubble extends StatelessWidget {
                     linkColor: isOwn ? Colors.white : T.accent,
                   ),
                 const SizedBox(height: 2),
+                _reactionsBar(context),
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
@@ -387,6 +546,7 @@ class MessageBubble extends StatelessWidget {
         ),
       );
     } else {
+      items.add(const PopupMenuItem(value: 'react', child: Text('Реакция…')));
       items.add(const PopupMenuItem(value: 'reply', child: Text('Ответить')));
       // Редактировать можно только СВОЙ ТЕКСТ (не файлы).
       if (isOwn && !_isFile) {
@@ -422,6 +582,9 @@ class MessageBubble extends StatelessWidget {
     if (!context.mounted) return;
 
     switch (action) {
+      case 'react':
+        await _pickReaction(context);
+        break;
       case 'reply':
         onReply();
         break;

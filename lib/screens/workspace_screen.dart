@@ -477,6 +477,7 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                     key: ValueKey(_selectedRoom!.id),
                     room: _selectedRoom!,
                     service: widget.matrixService,
+                    onRoomLeft: () => setState(() => _selectedRoom = null),
                   ),
           ),
         ],
@@ -566,12 +567,12 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   );
 
   // ---------------------------------------------------------------------------
-  // Обычный список чатов (поиск пустой). Сверху — приглашения в группы.
+  // Обычный список чатов (поиск пустой). Приглашения в группы показываются
+  // такими же плитками — решение принимается внутри самого чата (как в WhatsApp).
   Widget _roomList() {
     return StreamBuilder(
       stream: _client.onSync.stream,
       builder: (context, snapshot) {
-        // Групповые приглашения (личные принимаются автоматически в сервисе).
         final invites = _client.rooms
             .where((r) => r.membership == matrix.Membership.invite)
             .toList();
@@ -595,47 +596,21 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
-  // Принять приглашение в группу: вступить и сразу подтянуть участников,
-  // чтобы состав группы был виден полностью, а не «2 участника».
-  Future<void> _acceptInvite(matrix.Room room) async {
-    try {
-      await room.join();
-      try {
-        await room.postLoad();
-      } catch (_) {}
-      try {
-        await room.requestParticipants();
-      } catch (_) {}
-      if (mounted) setState(() => _selectedRoom = room);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Не удалось вступить в группу: $e')),
-        );
-      }
-    }
-  }
-
-  Future<void> _declineInvite(matrix.Room room) async {
-    try {
-      await room.leave();
-      if (mounted) setState(() {});
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Не удалось отклонить: $e')));
-      }
-    }
-  }
-
-  // Плашка приглашения в группу (светло-золотая, с кнопками).
+  // Плитка приглашения: открывает чат, где есть кнопки «Принять / Отклонить».
   Widget _inviteTile(matrix.Room room) {
     final title = room.getLocalizedDisplayname();
+    final isSelected = _selectedRoom?.id == room.id;
     return Material(
-      color: const Color(0xFFFDF6E3),
+      color: Colors.transparent,
       child: ListTile(
-        leading: InitialsAvatar(name: title, group: true),
+        selected: isSelected,
+        selectedTileColor: T.selected,
+        leading: InitialsAvatar(
+          name: title,
+          group: true,
+          mxcUrl: room.avatar,
+          client: _client,
+        ),
         title: Text(
           title,
           maxLines: 1,
@@ -646,25 +621,22 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
           'Приглашение в группу',
           style: TextStyle(fontSize: 12.5, color: T.steel),
         ),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              tooltip: 'Принять',
-              icon: const Icon(
-                Icons.check_circle,
-                color: Color(0xFF2E7D32),
-                size: 26,
-              ),
-              onPressed: () => _acceptInvite(room),
+        trailing: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+          decoration: BoxDecoration(
+            color: T.gold,
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: const Text(
+            'новое',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
             ),
-            IconButton(
-              tooltip: 'Отклонить',
-              icon: const Icon(Icons.cancel, color: Colors.redAccent, size: 26),
-              onPressed: () => _declineInvite(room),
-            ),
-          ],
+          ),
         ),
+        onTap: () => setState(() => _selectedRoom = room),
       ),
     );
   }
