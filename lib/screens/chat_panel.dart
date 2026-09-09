@@ -57,6 +57,16 @@ class _ChatPanelState extends State<ChatPanel> {
   // Прокрутка ленты с возможностью прыжка к произвольному сообщению.
   final ItemScrollController _itemScroll = ItemScrollController();
 
+  // Отслеживание видимых элементов — по нему подгружаем историю, когда
+  // пользователь домотал до верха ленты.
+  final ItemPositionsListener _itemPositions = ItemPositionsListener.create();
+
+  // true, пока идёт подгрузка предыдущих сообщений (защита от гонки).
+  bool _loadingHistory = false;
+
+  // Больше нечего подгружать (дошли до начала переписки).
+  bool _historyEnd = false;
+
   // Последний построенный список событий (нужен для поиска индекса
   // при прыжке и для локального поиска по переписке).
   List<matrix.Event> _lastEvents = const [];
@@ -85,12 +95,18 @@ class _ChatPanelState extends State<ChatPanel> {
       _timeline?.cancelSubscriptions();
     } catch (_) {}
     _timeline = null;
+    // Новый чат — заново разрешаем подгрузку истории.
+    _loadingHistory = false;
+    _historyEnd = false;
     // У приглашения истории нет — таймлайн запрашиваем только после вступления.
     if (widget.room.membership == matrix.Membership.invite) {
       _timelineFuture = Future.error('invite');
       return;
     }
     _timelineFuture = widget.room.getTimeline(
+      // По умолчанию SDK отдаёт всего 30 событий — в активной группе это
+      // меньше одного дня переписки, и чат выглядел «обрезанным».
+      limit: 100,
       onUpdate: () {
         if (mounted) setState(() {});
         // Чат открыт — значит сообщения прочитаны. Без этого счётчик
@@ -287,10 +303,51 @@ class _ChatPanelState extends State<ChatPanel> {
   void initState() {
     super.initState();
     _loadTimeline();
+    _itemPositions.itemPositions.addListener(_onScrollPositions);
     _searchCtrl.addListener(() {
       final q = _searchCtrl.text.trim().toLowerCase();
       if (q != _searchQuery && mounted) setState(() => _searchQuery = q);
     });
+  }
+
+  // Лента перевёрнута (reverse: true): index 0 — самое новое сообщение внизу,
+  // последний index — самое старое вверху. Значит «домотали до верха» — это
+  // приближение максимального видимого индекса к концу списка.
+  void _onScrollPositions() {
+    if (_loadingHistory || _historyEnd) return;
+    final positions = _itemPositions.itemPositions.value;
+    if (positions.isEmpty || _lastEvents.isEmpty) return;
+    final maxIndex = positions
+        .map((p) => p.index)
+        .reduce((a, b) => a > b ? a : b);
+    // Осталось меньше 8 сообщений до начала загруженного куска — пора тянуть.
+    if (maxIndex >= _lastEvents.length - 8) _loadMoreHistory();
+  }
+
+  /// Подгружает предыдущую порцию сообщений. Вызывается при прокрутке вверх
+  /// и сразу после открытия чата, если загруженного куска мало.
+  Future<void> _loadMoreHistory() async {
+    final tl = _timeline;
+    if (tl == null || _loadingHistory || _historyEnd) return;
+    if (!tl.canRequestHistory) {
+      _historyEnd = true;
+      return;
+    }
+    _loadingHistory = true;
+    if (mounted) setState(() {});
+    try {
+      // Timeline.requestHistory ничего не возвращает, поэтому «дошли ли до
+      // начала переписки» определяем по тому, прибавилось ли событий.
+      final before = tl.events.length;
+      await tl.requestHistory(historyCount: 100);
+      if (tl.events.length == before || !tl.canRequestHistory) {
+        _historyEnd = true;
+      }
+    } catch (e) {
+      debugPrint('Не удалось подгрузить историю: $e');
+    }
+    _loadingHistory = false;
+    if (mounted) setState(() {});
   }
 
   @override
@@ -310,6 +367,7 @@ class _ChatPanelState extends State<ChatPanel> {
     try {
       _timeline?.cancelSubscriptions();
     } catch (_) {}
+    _itemPositions.itemPositions.removeListener(_onScrollPositions);
     _highlightTimer?.cancel();
     _searchCtrl.dispose();
     super.dispose();
@@ -903,6 +961,10 @@ class _ChatPanelState extends State<ChatPanel> {
                         return isMsg || isSystem;
                       }).toList();
                       _lastEvents = events;
+                      // Фоном докладываем картинки и мелкие файлы в локальный
+                      // архив: на сервере вложения живут ограниченный срок,
+                      // а у пользователя должны остаться навсегда.
+                      widget.service.mediaArchive?.enqueue(events);
                       if (events.isEmpty) {
                         return const Center(
                           child: Text(
@@ -914,6 +976,7 @@ class _ChatPanelState extends State<ChatPanel> {
                       return ScrollablePositionedList.builder(
                         reverse: true,
                         itemScrollController: _itemScroll,
+                        itemPositionsListener: _itemPositions,
                         padding: const EdgeInsets.symmetric(
                           vertical: 14,
                           horizontal: 40,
@@ -968,6 +1031,45 @@ class _ChatPanelState extends State<ChatPanel> {
                       );
                     },
                   ),
+
+                  // Индикатор подгрузки предыдущих сообщений (вверху ленты).
+                  if (_loadingHistory)
+                    Positioned(
+                      top: 8,
+                      left: 0,
+                      right: 0,
+                      child: Center(
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 7,
+                          ),
+                          decoration: BoxDecoration(
+                            color: T.panelAlt,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: T.border),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: const [
+                              SizedBox(
+                                width: 13,
+                                height: 13,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: T.accent,
+                                ),
+                              ),
+                              SizedBox(width: 9),
+                              Text(
+                                'Загружаем предыдущие сообщения…',
+                                style: TextStyle(fontSize: 12, color: T.steel),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
 
                   // Результаты поиска по чату (поверх ленты).
                   if (_searchOpen && _searchQuery.length >= 2)

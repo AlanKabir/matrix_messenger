@@ -11,6 +11,7 @@ import 'package:matrix/matrix.dart' as matrix;
 import 'package:path_provider/path_provider.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'media_archive.dart';
 import 'sso_login.dart';
 
 // Synapse теперь за nginx с TLS (https, порт 443). Без :8008.
@@ -20,6 +21,12 @@ const kHomeserver = 'https://matrix.sgo.kz';
 // Лежит в assets приложения — Dart на Windows НЕ читает хранилище Windows,
 // поэтому CA обязательно отдать клиенту явно, иначе HandshakeException.
 const kInternalCaAsset = 'assets/certs/sgo-msg-ca.crt';
+
+// --- Локальный архив вложений -----------------------------------------------
+// Идея: на сервере файлы хранятся ограниченный срок (media_retention), а на
+// компьютере пользователя остаются навсегда. Тексты при этом живут на сервере
+// вечно — они почти ничего не весят.
+// Пороги размеров и фоновая докачка — в services/media_archive.dart.
 
 /// Глобальный override: ЛЮБОЙ HttpClient в приложении будет доверять нашему
 /// внутреннему CA — в том числе те, что matrix SDK может создавать сам для
@@ -57,6 +64,15 @@ class MatrixService {
   matrix.Client? client;
 
   static bool _vodozemacInitialized = false;
+
+  /// Папка постоянного архива вложений на этом компьютере.
+  Directory? _mediaArchiveDir;
+  Directory? get mediaArchiveDir => _mediaArchiveDir;
+
+  /// Фоновое наполнение архива. Один экземпляр на всё приложение —
+  /// у него общая очередь и память об уже обработанных файлах.
+  MediaArchive? _mediaArchive;
+  MediaArchive? get mediaArchive => _mediaArchive;
 
   // Тип account_data, где храним «удалённые» (очищенные) чаты:
   // { "rooms": { "<roomId>": <timestampMillis>, ... } }
@@ -120,9 +136,30 @@ class MatrixService {
         ? await databaseFactoryFfi.openDatabase(dbPath)
         : null;
 
+    // Папка постоянного архива вложений (см. комментарий ниже).
+    if (docDir != null) {
+      final mediaDir = Directory('${docDir.path}/media_archive');
+      if (!await mediaDir.exists()) {
+        await mediaDir.create(recursive: true);
+      }
+      _mediaArchiveDir = mediaDir;
+    }
+
     final matrixDb = await matrix.MatrixSdkDatabase.init(
       'MatrixMessenger',
       database: openedDb,
+      // --- ЛОКАЛЬНЫЙ АРХИВ ВЛОЖЕНИЙ ---
+      // На сервере файлы живут ограниченный срок (media_retention), а у
+      // пользователя остаются навсегда. Без этих двух параметров кэш SDK
+      // выключен полностью: maxFileSize по умолчанию 0 (условие «сохранять,
+      // если размер <= maxFileSize» никогда не выполняется), а без
+      // fileStorageLocation запись файлов вообще не работает.
+      //
+      // deleteFilesAfterDuration НЕ ЗАДАЁМ СОЗНАТЕЛЬНО: это автоочистка
+      // старых файлов внутри SDK, а нам нужно ровно обратное — вечное
+      // хранение. Если её включить, архив будет сам себя стирать.
+      maxFileSize: kMaxArchivedFileBytes,
+      fileStorageLocation: _mediaArchiveDir?.uri,
     );
 
     final secureHttp = await _buildSecureHttpClient();
@@ -130,7 +167,17 @@ class MatrixService {
       'MatrixMessenger',
       database: matrixDb,
       httpClient: secureHttp, // null на web — matrix возьмёт дефолтный
+      // ВАЖНО (иначе «пропадают старые сообщения»).
+      // Когда Synapse отдаёт по комнате sync с limited: true (разрыв ленты —
+      // приложение было закрыто/ноутбук спал/пришло много сообщений сразу),
+      // SDK делает database.deleteTimelineForRoom() и СТИРАЕТ всю локальную
+      // историю комнаты. По умолчанию этот флаг = false, поэтому история
+      // после стирания заново НЕ запрашивалась, и пользователь видел
+      // только несколько последних сообщений. С true SDK сразу дотягивает
+      // историю обратно.
+      requestHistoryOnLimitedTimeline: true,
     );
+    _mediaArchive = MediaArchive(client!);
   }
 
   Future<bool> tryRestoreSession() async {
@@ -337,6 +384,44 @@ class MatrixService {
       waitForSync: true,
     );
     return c.getRoomById(roomId);
+  }
+
+  // --- Локальный архив вложений: статистика и очистка ------------------------
+
+  /// Сколько файлов и сколько байт занимает архив вложений на этом компьютере.
+  /// Нужно для экрана настроек: пользователь должен видеть, что именно у него
+  /// накопилось, раз мы храним файлы вечно.
+  Future<({int files, int bytes})> archiveStats() async {
+    final dir = _mediaArchiveDir;
+    if (dir == null || !await dir.exists()) return (files: 0, bytes: 0);
+    var files = 0;
+    var bytes = 0;
+    try {
+      await for (final entity in dir.list()) {
+        if (entity is File) {
+          files++;
+          bytes += await entity.length();
+        }
+      }
+    } catch (e) {
+      debugPrint('archiveStats: $e');
+    }
+    return (files: files, bytes: bytes);
+  }
+
+  /// Полностью очищает локальный архив вложений.
+  /// ВНИМАНИЕ: файлы, которые сервер уже удалил по ретенции, после этого
+  /// не восстановятся ниоткуда. Вызывать только по явной команде пользователя.
+  Future<void> clearArchive() async {
+    final dir = _mediaArchiveDir;
+    if (dir == null || !await dir.exists()) return;
+    await for (final entity in dir.list()) {
+      if (entity is File) {
+        try {
+          await entity.delete();
+        } catch (_) {}
+      }
+    }
   }
 
   // Аккуратно закрыть подписку при выходе.

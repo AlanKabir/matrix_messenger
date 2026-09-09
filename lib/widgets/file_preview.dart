@@ -447,13 +447,37 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
         _docxBlocks = docx;
         _loading = false;
       });
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = 'Не удалось загрузить файл';
+        _error = _describeLoadError(e);
         _loading = false;
       });
     }
+  }
+
+  // Файлы хранятся на сервере ограниченный срок, а на компьютере — навсегда.
+  // Если файл не открылся, человек должен понимать, что именно случилось:
+  // «сервер его уже удалил» и «нет связи» — это разные истории, и в первом
+  // случае повторять попытку бессмысленно.
+  String _describeLoadError(Object e) {
+    var notFound = false;
+    if (e is matrix.MatrixException) {
+      notFound =
+          e.error == matrix.MatrixError.M_NOT_FOUND ||
+          e.errcode == 'M_NOT_FOUND';
+    }
+    if (!notFound) {
+      final text = e.toString().toUpperCase();
+      notFound = text.contains('M_NOT_FOUND') || text.contains('404');
+    }
+    if (notFound) {
+      return 'Файл больше не хранится на сервере.\n\n'
+          'Вложения удаляются с сервера по истечении срока хранения. '
+          'Копия остаётся только у тех, кто открывал файл раньше, — '
+          'попросите их прислать его повторно.';
+    }
+    return 'Не удалось загрузить файл. Проверьте подключение к сети.';
   }
 
   // Записать во временную папку и вернуть путь.
@@ -658,10 +682,35 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
       );
     }
     if (_error != null) {
+      // «Срок хранения истёк» — это не поломка, а штатное поведение,
+      // поэтому такой текст показываем спокойно, без красного цвета.
+      final expired = _error!.startsWith('Файл больше не хранится');
       return SizedBox(
         height: 220,
         child: Center(
-          child: Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 28),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  expired ? Icons.history_toggle_off : Icons.error_outline,
+                  size: 34,
+                  color: expired ? T.hint : Colors.redAccent,
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  _error!,
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 13,
+                    height: 1.45,
+                    color: expired ? T.steel : Colors.redAccent,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       );
     }

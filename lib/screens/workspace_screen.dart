@@ -312,6 +312,16 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
         name: name,
         preset: matrix.CreateRoomPreset.privateChat,
         invite: members,
+        // Явно задаём видимость истории = shared: участник, приглашённый
+        // позже, видит всю переписку группы с самого начала. Без этого
+        // всё зависит от настроек сервера, и добавленный человек мог
+        // открыть группу и не увидеть старых сообщений.
+        initialState: [
+          matrix.StateEvent(
+            type: 'm.room.history_visibility',
+            content: {'history_visibility': 'shared'},
+          ),
+        ],
       );
       final room = _client.getRoomById(roomId);
       if (room != null && mounted) {

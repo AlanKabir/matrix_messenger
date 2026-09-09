@@ -45,10 +45,62 @@ class _SettingsScreenState extends State<SettingsScreen> {
   // Текущее состояние автозапуска (прочитано из реестра при старте).
   bool _autostart = AutostartService.instance.enabled;
 
+  // Размер локального архива вложений (null — ещё считается).
+  ({int files, int bytes})? _archiveStats;
+
   @override
   void initState() {
     super.initState();
     _profileFuture = _client.fetchOwnProfile();
+    _loadArchiveStats();
+  }
+
+  // --- локальный архив вложений ---------------------------------------------
+
+  Future<void> _loadArchiveStats() async {
+    final stats = await widget.service.archiveStats();
+    if (mounted) setState(() => _archiveStats = stats);
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes Б';
+    const units = ['КБ', 'МБ', 'ГБ', 'ТБ'];
+    var value = bytes / 1024;
+    var unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit++;
+    }
+    return '${value.toStringAsFixed(value >= 10 ? 0 : 1)} ${units[unit]}';
+  }
+
+  Future<void> _confirmClearArchive() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Очистить архив вложений?'),
+        content: const Text(
+          'Будут удалены все сохранённые на этом компьютере файлы.\n\n'
+          'Те вложения, срок хранения которых на сервере уже истёк, '
+          'восстановить будет невозможно.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Отмена'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Очистить'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await widget.service.clearArchive();
+    await _loadArchiveStats();
+    _snack('Архив вложений очищен');
   }
 
   void _snack(String msg) {
@@ -258,6 +310,54 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     'Мессенджер откроется автоматически после включения компьютера',
                     style: TextStyle(fontSize: 12.5, color: T.textSec),
                   ),
+                ),
+              ]),
+
+              // --- локальный архив вложений ---
+              const SizedBox(height: 22),
+              _group([
+                ListTile(
+                  leading: const Icon(Icons.inventory_2_outlined,
+                      color: T.accent),
+                  title: const Text(
+                    'Архив вложений на этом компьютере',
+                    style: TextStyle(
+                      color: T.text,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  subtitle: Text(
+                    _archiveStats == null
+                        ? 'Подсчёт…'
+                        : 'Файлов: ${_archiveStats!.files} · '
+                            '${_formatBytes(_archiveStats!.bytes)}\n'
+                            'На сервере вложения хранятся ограниченный срок, '
+                            'здесь они остаются навсегда.',
+                    style: const TextStyle(fontSize: 12.5, color: T.textSec),
+                  ),
+                  isThreeLine: _archiveStats != null,
+                  trailing: IconButton(
+                    tooltip: 'Обновить',
+                    icon: const Icon(Icons.refresh, color: T.hint, size: 20),
+                    onPressed: _loadArchiveStats,
+                  ),
+                ),
+                ListTile(
+                  leading: const Icon(Icons.delete_sweep_outlined,
+                      color: Colors.red),
+                  title: const Text(
+                    'Очистить архив вложений',
+                    style: TextStyle(
+                      color: Colors.red,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                  subtitle: const Text(
+                    'Освободит место, но файлы, уже удалённые с сервера, '
+                    'восстановить будет нельзя',
+                    style: TextStyle(fontSize: 12.5, color: T.textSec),
+                  ),
+                  onTap: _confirmClearArchive,
                 ),
               ]),
 
