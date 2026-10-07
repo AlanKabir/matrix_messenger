@@ -42,7 +42,7 @@ dependencies:
   flutter_vodozemac: ^0.5.0
   url_launcher: ^6.3.0
   file_picker: ^8.0.5
-  pdfrx: ^1.0.80
+  pdfrx: ">=2.0.0 <2.6.2"
   excel: ^4.0.3
   archive: ^3.6.1
   xml: ^6.5.0

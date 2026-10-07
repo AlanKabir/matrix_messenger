@@ -4,6 +4,8 @@
 // showMemberPicker(...) возвращает список Matrix ID выбранных людей
 // или null, если пользователь закрыл окно.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
@@ -55,20 +57,33 @@ class _MemberPickerDialogState extends State<_MemberPickerDialog> {
   // Выбранные: id -> отображаемое имя (имя нужно для «чипов» внизу).
   final Map<String, String> _selected = {};
 
+  // Пауза перед запросом: пока человек печатает, сервер не спрашиваем
+  // (иначе запрос на каждую букву и rate-limit, как было в основном поиске).
+  Timer? _debounce;
+
   @override
   void dispose() {
+    _debounce?.cancel();
     _searchCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _search(String query) async {
-    if (query.trim().isEmpty) {
+  void _onQueryChanged(String query) {
+    _debounce?.cancel();
+    final q = query.trim();
+    if (q.length < 2) {
       setState(() {
         _results = [];
         _error = null;
+        _loading = false;
       });
       return;
     }
+    setState(() => _loading = true);
+    _debounce = Timer(const Duration(milliseconds: 500), () => _search(q));
+  }
+
+  Future<void> _search(String query) async {
     setState(() {
       _loading = true;
       _error = null;
@@ -79,6 +94,8 @@ class _MemberPickerDialogState extends State<_MemberPickerDialog> {
         limit: 30,
       );
       if (!mounted) return;
+      // Пока шёл запрос, текст успели поменять — этот ответ устарел.
+      if (_searchCtrl.text.trim() != query.trim()) return;
       setState(() {
         _results = response.results
             .where((p) => !widget.exclude.contains(p.userId))
@@ -142,7 +159,7 @@ class _MemberPickerDialogState extends State<_MemberPickerDialog> {
               child: TextField(
                 controller: _searchCtrl,
                 autofocus: true,
-                onChanged: _search,
+                onChanged: _onQueryChanged,
                 style: const TextStyle(color: T.text),
                 decoration: InputDecoration(
                   hintText: 'Введите фамилию или имя…',
@@ -249,12 +266,14 @@ class _MemberPickerDialogState extends State<_MemberPickerDialog> {
       );
     }
     if (_results.isEmpty) {
-      return const SizedBox(
+      return SizedBox(
         height: 180,
         child: Center(
           child: Text(
-            'Начните вводить фамилию сотрудника',
-            style: TextStyle(color: T.hint),
+            _searchCtrl.text.trim().length >= 2
+                ? 'Никого не найдено'
+                : 'Начните вводить фамилию сотрудника',
+            style: const TextStyle(color: T.hint),
           ),
         ),
       );
@@ -269,7 +288,11 @@ class _MemberPickerDialogState extends State<_MemberPickerDialog> {
         return Material(
           color: checked ? T.selected : Colors.transparent,
           child: ListTile(
-            leading: InitialsAvatar(name: name),
+            leading: InitialsAvatar(
+              name: name,
+              mxcUrl: p.avatarUrl,
+              client: widget.client,
+            ),
             title: Text(
               name,
               maxLines: 1,

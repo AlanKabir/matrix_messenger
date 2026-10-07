@@ -6,6 +6,7 @@
 // Повторить отправку / Удалить).
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:matrix/matrix.dart' as matrix;
 
 import '../app_theme.dart';
@@ -105,8 +106,13 @@ class MessageBubble extends StatelessWidget {
 
   bool get _isReply => _replyToId != null;
 
-  // Ищем цитируемое сообщение сначала в загруженной ленте, потом на сервере.
-  Future<matrix.Event?> _fetchQuoted() async {
+  // Кэш цитируемых сообщений, которых нет в загруженной ленте.
+  // Пузырь — StatelessWidget и перестраивается на каждое обновление чата;
+  // без кэша каждый раз уходил запрос getEventById к серверу.
+  static final Map<String, Future<matrix.Event?>> _quoteCache = {};
+
+  // Цитируемое сообщение из загруженной ленты (без ожидания) или null.
+  matrix.Event? _quotedFromTimeline() {
     final id = _replyToId;
     if (id == null) return null;
     try {
@@ -114,11 +120,17 @@ class MessageBubble extends StatelessWidget {
         if (e.eventId == id) return e;
       }
     } catch (_) {}
-    try {
-      return await room.getEventById(id);
-    } catch (_) {
-      return null;
-    }
+    return null;
+  }
+
+  // Ищем цитируемое сообщение на сервере — один раз на eventId.
+  Future<matrix.Event?> _fetchQuoted() {
+    final id = _replyToId!;
+    if (_quoteCache.length > 500) _quoteCache.clear();
+    return _quoteCache.putIfAbsent(
+      id,
+      () => room.getEventById(id).catchError((_) => null),
+    );
   }
 
   // Событие «как показывать»: если сообщение редактировали, SDK подставит
@@ -167,64 +179,73 @@ class MessageBubble extends StatelessWidget {
         final id = _replyToId;
         if (id != null) onJumpTo?.call(id);
       },
-      child: FutureBuilder<matrix.Event?>(
-        future: _fetchQuoted(),
-        builder: (context, snap) {
-          final src = snap.data;
-          final name = src == null
-              ? '…'
-              : room
-                    .unsafeGetUserFromMemoryOrFallback(src.senderId)
-                    .calcDisplayname();
-          String text;
-          if (src == null) {
-            text = snap.connectionState == ConnectionState.done
-                ? 'Сообщение недоступно'
-                : 'Загрузка…';
-          } else if (src.redacted) {
-            text = 'Сообщение удалено';
-          } else {
-            text = eventSnippet(src);
-          }
-          final baseColor = isOwn ? Colors.white : T.steel;
-          return Container(
-            margin: const EdgeInsets.only(bottom: 6),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-            decoration: BoxDecoration(
-              color: (isOwn ? Colors.white : T.steel).withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(8),
-              border: Border(
-                left: BorderSide(
-                  color: isOwn ? Colors.white70 : T.gold,
-                  width: 3,
-                ),
-              ),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: baseColor,
+      child: Builder(
+        builder: (context) {
+          final local = _quotedFromTimeline();
+          return FutureBuilder<matrix.Event?>(
+            // Есть в ленте — показываем сразу, без запроса и без «Загрузка…».
+            initialData: local,
+            future: local != null ? Future.value(local) : _fetchQuoted(),
+            builder: (context, snap) {
+              final src = snap.data;
+              final name = src == null
+                  ? '…'
+                  : room
+                        .unsafeGetUserFromMemoryOrFallback(src.senderId)
+                        .calcDisplayname();
+              String text;
+              if (src == null) {
+                text = snap.connectionState == ConnectionState.done
+                    ? 'Сообщение недоступно'
+                    : 'Загрузка…';
+              } else if (src.redacted) {
+                text = 'Сообщение удалено';
+              } else {
+                text = eventSnippet(src);
+              }
+              final baseColor = isOwn ? Colors.white : T.steel;
+              return Container(
+                margin: const EdgeInsets.only(bottom: 6),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                decoration: BoxDecoration(
+                  color: (isOwn ? Colors.white : T.steel).withValues(
+                    alpha: 0.12,
+                  ),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border(
+                    left: BorderSide(
+                      color: isOwn ? Colors.white70 : T.gold,
+                      width: 3,
+                    ),
                   ),
                 ),
-                Text(
-                  text,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: isOwn ? Colors.white70 : T.textSec,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: baseColor,
+                      ),
+                    ),
+                    Text(
+                      text,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: isOwn ? Colors.white70 : T.textSec,
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              );
+            },
           );
         },
       ),
@@ -690,6 +711,12 @@ class MessageBubble extends StatelessWidget {
     } else {
       items.add(const PopupMenuItem(value: 'react', child: Text('Реакция…')));
       items.add(const PopupMenuItem(value: 'reply', child: Text('Ответить')));
+      // Скопировать текст (у файлов — их имя не нужно, пункта нет).
+      if (!_isFile) {
+        items.add(
+          const PopupMenuItem(value: 'copy', child: Text('Копировать текст')),
+        );
+      }
       // Редактировать можно только СВОЙ ТЕКСТ (не файлы).
       if (isOwn && !_isFile) {
         items.add(
@@ -738,6 +765,19 @@ class MessageBubble extends StatelessWidget {
         break;
       case 'reply':
         onReply();
+        break;
+      case 'copy':
+        // Актуальный (уже отредактированный) текст, без reply-заглушки.
+        await Clipboard.setData(
+          ClipboardData(text: stripReplyFallback(_display.body)),
+        );
+        if (!context.mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Текст скопирован'),
+            duration: Duration(seconds: 1),
+          ),
+        );
         break;
       case 'edit':
         // Передаём актуальный (уже отредактированный) текст без цитаты.

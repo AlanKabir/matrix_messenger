@@ -87,6 +87,15 @@ class _ChatPanelState extends State<ChatPanel> {
   // Защита от повторных запросов «прочитано» на каждое обновление ленты.
   bool _markingRead = false;
 
+  // Кэш закреплённых сообщений: планка и шторка перерисовываются на каждое
+  // обновление ленты, и без кэша каждый раз шёл запрос к серверу.
+  final Map<String, Future<matrix.Event?>> _pinnedCache = {};
+
+  Future<matrix.Event?> _pinnedEvent(String id) => _pinnedCache.putIfAbsent(
+    id,
+    () => widget.room.getEventById(id).catchError((_) => null),
+  );
+
   void _loadTimeline() {
     // Отписываемся от предыдущего чата: иначе его обработчик продолжает
     // работать в фоне и помечает прочитанными сообщения, которые
@@ -95,6 +104,7 @@ class _ChatPanelState extends State<ChatPanel> {
       _timeline?.cancelSubscriptions();
     } catch (_) {}
     _timeline = null;
+    _pinnedCache.clear();
     // Новый чат — заново разрешаем подгрузку истории.
     _loadingHistory = false;
     _historyEnd = false;
@@ -519,7 +529,7 @@ class _ChatPanelState extends State<ChatPanel> {
 
   Widget _pinnedTile(BuildContext sheetCtx, String eventId) {
     return FutureBuilder<matrix.Event?>(
-      future: widget.room.getEventById(eventId),
+      future: _pinnedEvent(eventId),
       builder: (_, snap) {
         final e = snap.data;
         final name = e == null
@@ -580,7 +590,7 @@ class _ChatPanelState extends State<ChatPanel> {
               const SizedBox(width: 10),
               Expanded(
                 child: FutureBuilder<matrix.Event?>(
-                  future: widget.room.getEventById(lastId),
+                  future: _pinnedEvent(lastId),
                   builder: (_, snap) {
                     final e = snap.data;
                     return Text(
@@ -677,7 +687,12 @@ class _ChatPanelState extends State<ChatPanel> {
   }
 
   Future<void> _forward(matrix.Event event) async {
-    final target = await showForwardPicker(context, widget.room.client);
+    final target = await showForwardPicker(
+      context,
+      widget.room.client,
+      // Через наш сервис: без дублей чатов и без шифрования.
+      openDirect: widget.service.startDirectChat,
+    );
     if (target != null) {
       await widget.service.forwardEvent(event, target);
       if (mounted) {

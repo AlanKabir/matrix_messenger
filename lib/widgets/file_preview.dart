@@ -134,6 +134,73 @@ String _typeLabel(String ext) {
   }
 }
 
+// ─────────────────── безопасность файлов ───────────────────
+
+// Имя файла приходит от ОТПРАВИТЕЛЯ и может быть враждебным, например
+// «..\..\AppData\...\Startup\x.bat». Оставляем только само имя:
+// без каталогов, без запрещённых в Windows символов, без точек в начале.
+String safeFileName(String raw) {
+  var name = raw.split(RegExp(r'[\\/]')).last;
+  name = name.replaceAll(RegExp(r'[<>:"|?*\x00-\x1F]'), '_');
+  name = name.replaceAll(RegExp(r'^[.\s]+'), '');
+  name = name.replaceAll(RegExp(r'[.\s]+$'), '');
+  if (name.length > 150) {
+    final dot = name.lastIndexOf('.');
+    final ext = dot > 0 && name.length - dot <= 10 ? name.substring(dot) : '';
+    name = name.substring(0, 150 - ext.length) + ext;
+  }
+  // Зарезервированные имена Windows (CON, NUL, COM1…) тоже недопустимы.
+  final stem = name.split('.').first.toUpperCase();
+  if (RegExp(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$').hasMatch(stem)) {
+    name = '_$name';
+  }
+  return name.isEmpty ? 'file' : name;
+}
+
+// Типы, которые запускают код. «Открыть» для них запрещено —
+// только «Скачать», и дальше решает пользователь/антивирус.
+const Set<String> _dangerousExts = {
+  'exe',
+  'com',
+  'bat',
+  'cmd',
+  'scr',
+  'pif',
+  'msi',
+  'msp',
+  'mst',
+  'js',
+  'jse',
+  'vbs',
+  'vbe',
+  'wsf',
+  'wsh',
+  'hta',
+  'ps1',
+  'psm1',
+  'psd1',
+  'lnk',
+  'url',
+  'reg',
+  'cpl',
+  'jar',
+  'dll',
+  'sys',
+  'inf',
+  'scf',
+  'application',
+  'appref-ms',
+  'gadget',
+  'msc',
+  'chm',
+  'iso',
+  'img',
+  'vhd',
+  'vhdx',
+};
+
+bool isDangerousFile(String name) => _dangerousExts.contains(_extOf(name));
+
 // Универсальный формат «просто файл» для перетаскивания наружу —
 // в пакете нет готового octet-stream, объявляем сами.
 const SimpleFileFormat _genericFile = SimpleFileFormat(
@@ -300,7 +367,7 @@ class FileAttachment extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name = _fileNameOf(event);
+    final name = safeFileName(_fileNameOf(event));
     final ext = _extOf(name);
     final size = _sizeOf(event);
     final subtitle = [
@@ -419,7 +486,8 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
   bool _busy = false; // идёт открытие/сохранение
   String? _error;
 
-  String get _name => _fileNameOf(widget.event);
+  String get _name => safeFileName(_fileNameOf(widget.event));
+  bool get _dangerous => isDangerousFile(_name);
   String get _ext => _extOf(_name);
   int? get _size => _sizeOf(widget.event);
   bool get _isImage => _isImageExt(_ext);
@@ -481,8 +549,15 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
   }
 
   // Записать во временную папку и вернуть путь.
+  // Отдельная подпапка на каждое открытие: файлы с одинаковым именем
+  // не перезаписывают друг друга, а имя уже очищено safeFileName.
   Future<String> _writeTemp() async {
-    final dir = await getTemporaryDirectory();
+    final base = await getTemporaryDirectory();
+    final dir = Directory(
+      '${base.path}${Platform.pathSeparator}abyroy_open'
+      '${Platform.pathSeparator}${DateTime.now().millisecondsSinceEpoch}',
+    );
+    await dir.create(recursive: true);
     final path = '${dir.path}${Platform.pathSeparator}$_name';
     await File(path).writeAsBytes(_bytes!, flush: true);
     return path;
@@ -491,6 +566,28 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
   // Открыть системным приложением (Word/Excel/…), файл лежит во временной папке.
   Future<void> _open() async {
     if (_bytes == null || _busy) return;
+    if (_dangerous) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          icon: const Icon(Icons.gpp_maybe, color: Colors.redAccent, size: 36),
+          title: const Text('Открытие запрещено'),
+          content: Text(
+            'Файл «$_name» может запускать программы, поэтому открыть его '
+            'из мессенджера нельзя.\n\n'
+            'Если файл ожидаемый, сохраните его через «Скачать» и проверьте '
+            'антивирусом.',
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx),
+              child: const Text('Понятно'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
     setState(() => _busy = true);
     try {
       final path = await _writeTemp();
@@ -609,10 +706,13 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
                   Expanded(
                     child: FilledButton.icon(
                       onPressed: (_bytes == null || _busy) ? null : _open,
-                      icon: const Icon(Icons.open_in_new, size: 18),
+                      icon: Icon(
+                        _dangerous ? Icons.block : Icons.open_in_new,
+                        size: 18,
+                      ),
                       label: const Text('Открыть'),
                       style: FilledButton.styleFrom(
-                        backgroundColor: T.accent,
+                        backgroundColor: _dangerous ? T.hint : T.accent,
                         padding: const EdgeInsets.symmetric(vertical: 12),
                       ),
                     ),
@@ -760,11 +860,18 @@ class _FilePreviewDialogState extends State<_FilePreviewDialog> {
             ),
           ),
           const SizedBox(height: 6),
-          const Text(
-            'Предпросмотр содержимого недоступен.\n'
-            'Нажмите «Открыть», чтобы просмотреть файл в приложении.',
+          Text(
+            _dangerous
+                ? 'Исполняемый файл — открыть из мессенджера нельзя.\n'
+                      'Сохраните через «Скачать» и проверьте антивирусом.'
+                : 'Предпросмотр содержимого недоступен.\n'
+                      'Нажмите «Открыть», чтобы просмотреть файл в приложении.',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 12.5, color: T.hint, height: 1.4),
+            style: TextStyle(
+              fontSize: 12.5,
+              color: _dangerous ? Colors.redAccent : T.hint,
+              height: 1.4,
+            ),
           ),
         ],
       ),
