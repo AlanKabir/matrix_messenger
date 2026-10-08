@@ -138,11 +138,7 @@ class MatrixService {
 
     // Папка постоянного архива вложений (см. комментарий ниже).
     if (docDir != null) {
-      final mediaDir = Directory('${docDir.path}/media_archive');
-      if (!await mediaDir.exists()) {
-        await mediaDir.create(recursive: true);
-      }
-      _mediaArchiveDir = mediaDir;
+      _mediaArchiveDir = await _resolveArchiveDir(docDir);
     }
 
     final matrixDb = await matrix.MatrixSdkDatabase.init(
@@ -178,6 +174,68 @@ class MatrixService {
       requestHistoryOnLimitedTimeline: true,
     );
     _mediaArchive = MediaArchive(client!);
+  }
+
+  // Где хранить архив вложений.
+  //
+  // На Windows — в %LOCALAPPDATA%\ABYROY Chat\media_archive, а НЕ рядом с
+  // базой в AppData\Roaming. Roaming при перемещаемых профилях Windows
+  // копирует на файловый сервер при каждом входе/выходе: архив в гигабайты
+  // тормозил бы вход в систему и забивал сервер. Local остаётся на ПК.
+  //
+  // Если от прошлых версий остались файлы в старой папке (Roaming) —
+  // один раз переносим их, чтобы ничего не потерялось. Имена файлов SDK
+  // при переносе не меняются, поэтому база их находит по-прежнему.
+  Future<Directory> _resolveArchiveDir(Directory supportDir) async {
+    final oldDir = Directory('${supportDir.path}/media_archive');
+    var target = oldDir;
+    if (Platform.isWindows) {
+      final local = Platform.environment['LOCALAPPDATA'];
+      if (local != null && local.isNotEmpty) {
+        target = Directory('$local\\ABYROY Chat\\media_archive');
+      }
+    }
+    if (!await target.exists()) {
+      await target.create(recursive: true);
+    }
+    if (target.path != oldDir.path && await oldDir.exists()) {
+      var moved = 0;
+      try {
+        await for (final entity in oldDir.list()) {
+          if (entity is! File) continue;
+          final name = entity.uri.pathSegments.last;
+          final dest = File('${target.path}\\$name');
+          if (await dest.exists()) {
+            try {
+              await entity.delete();
+            } catch (_) {}
+            continue;
+          }
+          try {
+            // Тот же диск — мгновенное переименование.
+            await entity.rename(dest.path);
+          } catch (_) {
+            // Другой диск или файл занят — копируем и удаляем исходник.
+            try {
+              await entity.copy(dest.path);
+              await entity.delete();
+            } catch (e) {
+              debugPrint('Архив: не удалось перенести $name: $e');
+              continue;
+            }
+          }
+          moved++;
+        }
+        // Удаляем старую папку, только если она опустела.
+        if (await oldDir.list().isEmpty) await oldDir.delete();
+      } catch (e) {
+        debugPrint('Архив: перенос из Roaming прерван: $e');
+      }
+      if (moved > 0) {
+        debugPrint('Архив: перенесено из Roaming в Local файлов: $moved');
+      }
+    }
+    return target;
   }
 
   Future<bool> tryRestoreSession() async {

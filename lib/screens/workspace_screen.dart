@@ -20,6 +20,8 @@ import '../app_theme.dart';
 import '../services/matrix_service.dart';
 import '../widgets/common.dart';
 import '../widgets/member_picker.dart';
+import '../widgets/message_bubble.dart' show eventSnippet;
+import '../widgets/message_composer.dart' show MessageComposer;
 import 'chat_panel.dart';
 import 'settings_screen.dart';
 import '../services/desktop_service.dart';
@@ -470,9 +472,13 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
                   _header(),
                   _searchBar(),
                   Expanded(
-                    child: _searchQuery.isEmpty
-                        ? _roomList()
-                        : _searchResults(),
+                    // Перерисовываем список, когда меняются черновики
+                    // (ушёл из чата с недописанным текстом).
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: MessageComposer.draftsChanged,
+                      builder: (_, _, _) =>
+                          _searchQuery.isEmpty ? _roomList() : _searchResults(),
+                    ),
                   ),
                   _profileTile(),
                 ],
@@ -799,12 +805,35 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
     );
   }
 
+  // Текст последнего сообщения под названием чата.
+  //   • в группе — «Фамилия Имя: текст» (иначе непонятно, кто написал);
+  //   • своё сообщение — «Вы: текст» и в группе, и в личном чате;
+  //   • файлы — со скрепкой, без цитаты-«хвоста» ответа.
+  String _lastMessagePreview(matrix.Room room) {
+    final e = room.lastEvent;
+    if (e == null) return 'Нет сообщений';
+    // Служебные события (вход, переименование и т.п.) — как раньше, без имени.
+    if (e.type != matrix.EventTypes.Message) return e.body;
+    final text = eventSnippet(e).replaceAll('\n', ' ');
+    if (e.senderId == _client.userID) return 'Вы: $text';
+    if (room.isDirectChat) return text;
+    final full = room
+        .unsafeGetUserFromMemoryOrFallback(e.senderId)
+        .calcDisplayname();
+    // «Фамилия Имя Отчество» → «Фамилия Имя»: коротко, но без путаницы
+    // между тёзками.
+    final words = full.split(RegExp(r'\s+')).where((w) => w.isNotEmpty);
+    final short = words.take(2).join(' ');
+    return '${short.isEmpty ? full : short}: $text';
+  }
+
   // Плитка комнаты (используется и в списке чатов, и в результатах поиска).
   Widget _roomTile(matrix.Room room) {
     final unread = room.notificationCount;
     final isSelected = _selectedRoom?.id == room.id;
     final title = room.getLocalizedDisplayname();
-    final lastMsg = room.lastEvent?.body ?? 'Нет сообщений';
+    // Черновик показываем только у НЕ открытого чата — как в WhatsApp.
+    final draft = isSelected ? null : MessageComposer.draftFor(room.id);
 
     return Material(
       color: Colors.transparent,
@@ -825,12 +854,30 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
             overflow: TextOverflow.ellipsis,
             style: const TextStyle(fontWeight: FontWeight.w500, color: T.text),
           ),
-          subtitle: Text(
-            lastMsg,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12.5, color: T.textSec),
-          ),
+          subtitle: draft != null
+              ? Text.rich(
+                  TextSpan(
+                    children: [
+                      const TextSpan(
+                        text: 'Черновик: ',
+                        style: TextStyle(
+                          color: Color(0xFFC62828),
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      TextSpan(text: draft.replaceAll('\n', ' ')),
+                    ],
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12.5, color: T.textSec),
+                )
+              : Text(
+                  _lastMessagePreview(room),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12.5, color: T.textSec),
+                ),
           trailing: unread > 0
               ? Container(
                   padding: const EdgeInsets.symmetric(

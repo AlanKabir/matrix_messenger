@@ -441,7 +441,9 @@ class FileAttachment extends StatelessWidget {
     return DragItemWidget(
       allowedOperations: () => const [DropOperation.copy],
       dragItemProvider: (request) async {
-        final item = DragItem(suggestedName: name);
+        // localData — метка «тащим из нашего же окна»: панель чата по ней
+        // отличает свой файл и не отправляет его повторно в тот же чат.
+        final item = DragItem(suggestedName: name, localData: 'abyroy');
         item.addVirtualFile(
           format: _dragFormatFor(ext),
           provider: (sinkProvider, progress) async {

@@ -18,6 +18,8 @@ import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:super_drag_and_drop/super_drag_and_drop.dart';
+// DataReader (чтение перетащенного элемента) объявлен в super_clipboard.
+import 'package:super_clipboard/super_clipboard.dart' show DataReader;
 
 import '../app_theme.dart';
 import '../services/matrix_service.dart';
@@ -334,8 +336,8 @@ class _ChatPanelState extends State<ChatPanel> {
     if (maxIndex >= _lastEvents.length - 8) _loadMoreHistory();
   }
 
-  /// Подгружает предыдущую порцию сообщений. Вызывается при прокрутке вверх
-  /// и сразу после открытия чата, если загруженного куска мало.
+  /// Подгружает предыдущую порцию сообщений. Вызывается при прокрутке
+  /// вверх, когда до начала загруженного куска остаётся меньше 8 сообщений.
   Future<void> _loadMoreHistory() async {
     final tl = _timeline;
     if (tl == null || _loadingHistory || _historyEnd) return;
@@ -411,12 +413,24 @@ class _ChatPanelState extends State<ChatPanel> {
         return;
       }
       // Сообщение ещё не загружено — тянем историю порциями.
-      if (!tl.canRequestHistory) break;
+      if (!tl.canRequestHistory) {
+        _historyEnd = true;
+        break;
+      }
+      // Подгрузка при прокрутке уже идёт — ждём её, а не шлём второй
+      // такой же запрос параллельно.
+      if (_loadingHistory) {
+        await Future.delayed(const Duration(milliseconds: 150));
+        continue;
+      }
+      _loadingHistory = true;
       try {
         await tl.requestHistory(historyCount: 100);
       } catch (_) {
+        _loadingHistory = false;
         break;
       }
+      _loadingHistory = false;
       if (mounted) setState(() {});
       // Даём кадру перестроиться, чтобы _lastEvents обновился.
       await Future.delayed(const Duration(milliseconds: 60));
@@ -456,10 +470,15 @@ class _ChatPanelState extends State<ChatPanel> {
   Future<void> _searchLoadMore() async {
     final tl = _timeline;
     if (tl == null || !tl.canRequestHistory || _searchLoadingMore) return;
+    // Параллельно с подгрузкой при прокрутке не запрашиваем.
+    if (_loadingHistory) return;
+    _loadingHistory = true;
     setState(() => _searchLoadingMore = true);
     try {
       await tl.requestHistory(historyCount: 200);
     } catch (_) {}
+    _loadingHistory = false;
+    if (!tl.canRequestHistory) _historyEnd = true;
     if (mounted) setState(() => _searchLoadingMore = false);
   }
 
@@ -631,7 +650,13 @@ class _ChatPanelState extends State<ChatPanel> {
     int sent = 0;
     for (final item in event.session.items) {
       final reader = item.dataReader;
-      if (reader == null || !reader.canProvide(Formats.fileUri)) continue;
+      if (reader == null) continue;
+      // Нет пути на диске — это «виртуальный» файл: вложение, перетащенное
+      // из письма Outlook, файл из архива и т.п. Читаем его содержимое.
+      if (!reader.canProvide(Formats.fileUri)) {
+        if (await _dropVirtualFile(reader)) sent++;
+        continue;
+      }
       final done = Completer<void>();
       reader.getValue(
         Formats.fileUri,
@@ -684,6 +709,43 @@ class _ChatPanelState extends State<ChatPanel> {
         context,
       ).showSnackBar(SnackBar(content: Text('Отправлено файлов: $sent')));
     }
+  }
+
+  // Приём виртуального файла (Outlook отдаёт вложение письма без пути на
+  // диске — только имя и содержимое). Возвращает true, если файл отправлен.
+  Future<bool> _dropVirtualFile(DataReader reader) async {
+    final done = Completer<bool>();
+    final suggested = await reader.getSuggestedName();
+    // format: null — «любой файл, какой есть в этом элементе».
+    final progress = reader.getFile(
+      null,
+      (file) async {
+        try {
+          final bytes = await file.readAll();
+          if (bytes.isEmpty) throw Exception('пустой файл');
+          final name = (file.fileName?.isNotEmpty == true)
+              ? file.fileName!
+              : (suggested?.isNotEmpty == true ? suggested! : 'file');
+          final ok = await _composerKey.currentState?.sendFile(bytes, name);
+          if (!done.isCompleted) done.complete(ok == true);
+        } catch (e) {
+          debugPrint('DROP VIRTUAL ERROR: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Не удалось отправить файл: $e')),
+            );
+          }
+          if (!done.isCompleted) done.complete(false);
+        }
+      },
+      onError: (e) {
+        debugPrint('DROP VIRTUAL READ ERROR: $e');
+        if (!done.isCompleted) done.complete(false);
+      },
+    );
+    // В элементе вообще нет файла (перетащили текст, ссылку) — молча пропускаем.
+    if (progress == null) return false;
+    return done.future;
   }
 
   Future<void> _forward(matrix.Event event) async {
@@ -918,10 +980,17 @@ class _ChatPanelState extends State<ChatPanel> {
         if (!isInvite)
           Expanded(
             child: DropRegion(
-              formats: const [Formats.fileUri],
+              // fileUri — файлы из Проводника; standardFormats — в том числе
+              // виртуальные файлы (вложения, перетащенные из Outlook).
+              formats: Formats.standardFormats,
               hitTestBehavior: HitTestBehavior.opaque,
               onDropOver: (event) {
-                // Принимаем копирование файлов из Проводника.
+                // Файл тащат из нашего же чата (вложение из пузыря) — не
+                // принимаем, иначе отпускание мыши отправит его повторно.
+                if (event.session.items.any((i) => i.localData != null)) {
+                  return DropOperation.none;
+                }
+                // Принимаем копирование файлов из Проводника и Outlook.
                 if (event.session.allowedOperations.contains(
                   DropOperation.copy,
                 )) {
