@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:matrix/matrix.dart' as matrix;
 
 import '../app_theme.dart';
+import '../services/upload_limits.dart';
 
 // Единый источник цвета — палитра T. kAccent оставлен для обратной
 // совместимости со старым кодом, который на него ссылается.
@@ -264,6 +265,7 @@ Future<matrix.Room?> showForwardPicker(
         // Только комнаты, где я участник: в приглашение переслать нельзя.
         final rooms = client.rooms
             .where((r) => r.membership == matrix.Membership.join)
+            .where((r) => !UploadLimits.instance.isSettingsRoom(r))
             .where(
               (r) =>
                   query.isEmpty ||

@@ -13,6 +13,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'media_archive.dart';
 import 'sso_login.dart';
+import 'upload_limits.dart';
 
 // Synapse теперь за nginx с TLS (https, порт 443). Без :8008.
 const kHomeserver = 'https://matrix.sgo.kz';
@@ -294,6 +295,8 @@ class MatrixService {
   // Вызывается один раз после успешного входа: сразу разбираем «висящие»
   // приглашения и подписываемся на будущие (через onSync).
   void _afterLogin() {
+    // Лимит отправки файлов: потолок сервера, права админа, настройки.
+    unawaited(UploadLimits.instance.attach(client!));
     _joinPendingInvites();
     _inviteSub ??= client!.onSync.stream.listen((_) => _joinPendingInvites());
   }

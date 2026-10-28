@@ -1,6 +1,8 @@
 // screens/settings_screen.dart — экран «Настройки».
 // Внутри: карточка профиля с ФОТО (можно загрузить своё),
-// «Автозапуск при входе в Windows», «Устройства и сеансы», «Выйти».
+// «Автозапуск при входе в Windows», лимит отправки файлов (у админа —
+// вход в «Лимиты файлов сотрудников»), архив вложений,
+// «Устройства и сеансы», «Выйти».
 //
 // ФИО здесь НЕ редактируется: имя приходит из Active Directory через SSO,
 // менять его нужно в AD (или временно в админ-панели Synapse).
@@ -15,7 +17,9 @@ import 'package:matrix/matrix.dart' as matrix;
 import '../app_theme.dart';
 import '../services/autostart_service.dart';
 import '../services/matrix_service.dart';
+import '../services/upload_limits.dart';
 import '../widgets/common.dart';
+import 'admin_limits_screen.dart';
 import 'login_screen.dart';
 import 'sessions_screen.dart';
 
@@ -313,12 +317,58 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
               ]),
 
+              // --- лимит отправки файлов (+ админский раздел) ---
+              const SizedBox(height: 22),
+              ListenableBuilder(
+                listenable: UploadLimits.instance,
+                builder: (context, _) {
+                  final limits = UploadLimits.instance;
+                  return _group([
+                    ListTile(
+                      leading: const Icon(Icons.upload_file, color: T.accent),
+                      title: const Text(
+                        'Максимальный размер отправляемого файла',
+                        style: TextStyle(
+                          color: T.text,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                      subtitle: const Text(
+                        'Устанавливает администратор',
+                        style: TextStyle(fontSize: 12.5, color: T.textSec),
+                      ),
+                      trailing: Text(
+                        '${limits.myLimitMb} МБ',
+                        style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: T.accent,
+                        ),
+                      ),
+                    ),
+                    // Виден только администратору сервера.
+                    if (limits.isAdmin)
+                      _tile(
+                        icon: Icons.admin_panel_settings_outlined,
+                        label: 'Лимиты файлов сотрудников (админ)',
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => AdminLimitsScreen(client: _client),
+                          ),
+                        ),
+                      ),
+                  ]);
+                },
+              ),
+
               // --- локальный архив вложений ---
               const SizedBox(height: 22),
               _group([
                 ListTile(
-                  leading: const Icon(Icons.inventory_2_outlined,
-                      color: T.accent),
+                  leading: const Icon(
+                    Icons.inventory_2_outlined,
+                    color: T.accent,
+                  ),
                   title: const Text(
                     'Архив вложений на этом компьютере',
                     style: TextStyle(
@@ -330,9 +380,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     _archiveStats == null
                         ? 'Подсчёт…'
                         : 'Файлов: ${_archiveStats!.files} · '
-                            '${_formatBytes(_archiveStats!.bytes)}\n'
-                            'На сервере вложения хранятся ограниченный срок, '
-                            'здесь они остаются навсегда.',
+                              '${_formatBytes(_archiveStats!.bytes)}\n'
+                              'На сервере вложения хранятся ограниченный срок, '
+                              'здесь они остаются навсегда.',
                     style: const TextStyle(fontSize: 12.5, color: T.textSec),
                   ),
                   isThreeLine: _archiveStats != null,
@@ -343,8 +393,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                 ),
                 ListTile(
-                  leading: const Icon(Icons.delete_sweep_outlined,
-                      color: Colors.red),
+                  leading: const Icon(
+                    Icons.delete_sweep_outlined,
+                    color: Colors.red,
+                  ),
                   title: const Text(
                     'Очистить архив вложений',
                     style: TextStyle(

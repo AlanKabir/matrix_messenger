@@ -18,6 +18,7 @@ import 'package:matrix/matrix.dart' as matrix;
 
 import '../app_theme.dart';
 import '../services/matrix_service.dart';
+import '../services/upload_limits.dart';
 import '../widgets/common.dart';
 import '../widgets/member_picker.dart';
 import '../widgets/message_bubble.dart' show eventSnippet;
@@ -661,6 +662,8 @@ class _WorkspaceScreenState extends State<WorkspaceScreen> {
   List<matrix.Room> _visibleRooms() => _client.rooms
       .where((r) => r.membership == matrix.Membership.join)
       .where((r) => widget.matrixService.isRoomVisible(r))
+      // Служебная комната настроек (лимиты файлов) — не чат, не показываем.
+      .where((r) => !UploadLimits.instance.isSettingsRoom(r))
       .toList();
 
   // ---------------------------------------------------------------------------

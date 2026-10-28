@@ -23,6 +23,7 @@ import 'package:matrix/matrix.dart' as matrix;
 import 'package:super_clipboard/super_clipboard.dart';
 
 import '../app_theme.dart';
+import '../services/upload_limits.dart';
 import 'message_bubble.dart' show eventSnippet, stripReplyFallback;
 
 class MessageComposer extends StatefulWidget {
@@ -150,9 +151,11 @@ class MessageComposerState extends State<MessageComposer> {
     if (wasEditing) _loadDraft(widget.room.id);
   }
 
-  // Максимальный размер отправляемого файла — 5 МБ.
+  // Максимальный размер отправляемого файла — по умолчанию 20 МБ, админ
+  // может изменить лично для сотрудника (services/upload_limits.dart).
   // Проверка здесь закрывает все пути: скрепку, Ctrl+V и перетаскивание.
-  static const int maxFileBytes = 5 * 1024 * 1024;
+  int get maxFileBytes => UploadLimits.instance.myLimitBytes;
+  int get maxFileMb => UploadLimits.instance.myLimitMb;
 
   // Отправка файла (используется кнопкой, Ctrl+V и drag-and-drop из панели).
   // Возвращает true, если файл принят к отправке.
@@ -162,8 +165,9 @@ class MessageComposerState extends State<MessageComposer> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              '«$name» не отправлен: файл больше 5 МБ '
-              '(${(bytes.length / 1024 / 1024).toStringAsFixed(1)} МБ)',
+              '«$name» не отправлен: файл больше $maxFileMb МБ '
+              '(${(bytes.length / 1024 / 1024).toStringAsFixed(1)} МБ). '
+              'Если нужно больше — обратитесь к администратору.',
             ),
           ),
         );
@@ -364,11 +368,11 @@ class MessageComposerState extends State<MessageComposer> {
                     style: const TextStyle(fontSize: 12, color: T.textSec),
                   ),
                 ),
-              const Padding(
-                padding: EdgeInsets.only(top: 8),
+              Padding(
+                padding: const EdgeInsets.only(top: 8),
                 child: Text(
-                  'Файлы больше 5 МБ отправлены не будут.',
-                  style: TextStyle(fontSize: 12, color: T.textSec),
+                  'Файлы больше $maxFileMb МБ отправлены не будут.',
+                  style: const TextStyle(fontSize: 12, color: T.textSec),
                 ),
               ),
             ],
